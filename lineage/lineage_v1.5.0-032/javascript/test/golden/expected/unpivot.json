@@ -1,0 +1,57 @@
+{
+  "purpose": "Verify UNPIVOT-generated value and name column lineage.",
+  "coverage": [
+    "UNPIVOT Value Column",
+    "UNPIVOT Name Column",
+    "Same-Scope Generated Column",
+    "Physical Input Propagation"
+  ],
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "T_UNPIVOT_SOURCE",
+      "column_name": "CUSTOMER_ID",
+      "ordinal_position": 1
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "T_UNPIVOT_SOURCE",
+      "column_name": "SALES_AMOUNT",
+      "ordinal_position": 2
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "T_UNPIVOT_SOURCE",
+      "column_name": "COST_AMOUNT",
+      "ordinal_position": 3
+    }
+  ],
+  "outputs": [
+    {
+      "name": "CUSTOMER_ID",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.T_UNPIVOT_SOURCE.CUSTOMER_ID"
+      ]
+    },
+    {
+      "name": "METRIC_NAME",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.T_UNPIVOT_SOURCE.SALES_AMOUNT",
+        "PROJECT_ID.DATASET.T_UNPIVOT_SOURCE.COST_AMOUNT"
+      ]
+    },
+    {
+      "name": "METRIC_VALUE",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.T_UNPIVOT_SOURCE.SALES_AMOUNT",
+        "PROJECT_ID.DATASET.T_UNPIVOT_SOURCE.COST_AMOUNT"
+      ]
+    }
+  ]
+}

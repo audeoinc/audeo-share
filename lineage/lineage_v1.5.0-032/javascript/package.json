@@ -1,0 +1,20 @@
+{
+  "name": "bigquery-physical-lineage-udf",
+  "version": "1.5.0-032",
+  "private": true,
+  "description": "BigQuery SQL parser and physical column lineage JavaScript UDF",
+  "main": "dist/lineage_udf_bundle.js",
+  "scripts": {
+    "build": "node scripts/build_udf.js",
+    "verify:bundle": "node scripts/verify_bundle.js",
+    "test:golden": "node test/test_v1_5_0_003.js",
+    "test:regression": "node scripts/run_regression.js",
+    "test:release": "node test/test_v1_5_0_061.js && node test/test_v1_5_0_060.js && node test/test_v1_5_0_059.js && node test/test_v1_5_0_058.js && node test/test_v1_5_0_057.js && node test/test_v1_5_0_056.js && node test/test_v1_5_0_055.js && node test/test_v1_5_0_054.js && node test/test_v1_5_0_053.js && node test/test_v1_5_0_052.js && node test/test_v1_5_0_051.js && node test/test_v1_5_0_050.js && node test/test_v1_5_0_049.js && node test/test_v1_5_0_048.js && node test/test_v1_5_0_047.js && node test/test_v1_5_0_046.js && node test/test_v1_5_0_045.js && node test/test_v1_5_0_044.js && node test/test_v1_5_0_043.js && node test/test_v1_5_0_042.js && node test/test_v1_5_0_041.js && node test/test_v1_5_0_040.js && node test/test_v1_5_0_039.js && node test/test_v1_5_0_038.js && node test/test_v1_5_0_037.js && node test/test_v1_5_0_036.js && node test/test_v1_5_0_035.js && node test/test_v1_5_0_034.js && node test/test_v1_5_0_033.js && node test/test_v1_5_0_032.js && node test/test_v1_5_0_031.js && node test/test_v1_5_0_028.js && node test/test_v1_5_0_027.js && node test/test_v1_5_0_021.js && node test/test_v1_5_0_020.js && node test/test_v1_5_0_019.js && node test/test_v1_5_0_018.js && node test/test_v1_5_0_017.js && node test/test_v1_5_0_016.js && node test/test_v1_5_0_015.js && node test/test_v1_5_0_014.js",
+    "test": "npm run build && npm run verify:bundle && npm run test:release",
+    "build:everything": "node scripts/build_everything.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED"
+}

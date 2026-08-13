@@ -1,0 +1,55 @@
+{
+  "purpose": "Verify PIVOT aggregate prefixes and same-scope generated-column references.",
+  "coverage": [
+    "PIVOT Aggregate Prefix",
+    "PIVOT Column Alias",
+    "Same-Scope Generated Column",
+    "CTE Propagation"
+  ],
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES",
+      "column_name": "CUSTOMER_ID",
+      "ordinal_position": 1
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES",
+      "column_name": "CATEGORY",
+      "ordinal_position": 2
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES",
+      "column_name": "AMOUNT",
+      "ordinal_position": 3
+    }
+  ],
+  "outputs": [
+    {
+      "name": "CUSTOMER_ID",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.SALES.CUSTOMER_ID"
+      ]
+    },
+    {
+      "name": "PC_SALES_AMOUNT",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.SALES.AMOUNT"
+      ]
+    },
+    {
+      "name": "AV_SALES_AMOUNT",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.SALES.AMOUNT"
+      ]
+    }
+  ]
+}

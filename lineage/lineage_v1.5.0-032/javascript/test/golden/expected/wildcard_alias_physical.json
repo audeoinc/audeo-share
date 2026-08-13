@@ -1,0 +1,55 @@
+{
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMERS",
+      "column_name": "CUSTOMER_ID",
+      "ordinal_position": 1
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMERS",
+      "column_name": "NAME",
+      "ordinal_position": 2
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMERS",
+      "column_name": "ADDRESS",
+      "ordinal_position": 3
+    }
+  ],
+  "outputs": [
+    {
+      "name": "CUSTOMER_ID",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMERS.CUSTOMER_ID"
+      ],
+      "expression_text": "C.*"
+    },
+    {
+      "name": "NAME",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMERS.NAME"
+      ],
+      "expression_text": "C.*"
+    },
+    {
+      "name": "ADDRESS",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMERS.ADDRESS"
+      ],
+      "expression_text": "C.*"
+    }
+  ],
+  "purpose": "Regression coverage for wildcard_alias_physical.",
+  "coverage": [
+    "Existing Golden Regression"
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_CURRENT",
+      "column_name": "ORDER_ID"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_CURRENT",
+      "column_name": "UNIT_PRICE"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_CURRENT",
+      "column_name": "QUANTITY"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_ARCHIVE",
+      "column_name": "LEGACY_ORDER_ID"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_ARCHIVE",
+      "column_name": "GROSS_AMOUNT"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_ARCHIVE",
+      "column_name": "DISCOUNT_AMOUNT"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "ORDER_ID",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.SALES_ARCHIVE.LEGACY_ORDER_ID",
+        "PROJECT_ID.DATASET.SALES_CURRENT.ORDER_ID"
+      ]
+    },
+    {
+      "name": "AMOUNT",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.SALES_ARCHIVE.DISCOUNT_AMOUNT",
+        "PROJECT_ID.DATASET.SALES_ARCHIVE.GROSS_AMOUNT",
+        "PROJECT_ID.DATASET.SALES_CURRENT.QUANTITY",
+        "PROJECT_ID.DATASET.SALES_CURRENT.UNIT_PRICE"
+      ]
+    }
+  ],
+  "purpose": "Regression coverage for union_all_branches.",
+  "coverage": [
+    "Existing Golden Regression"
+  ]
+}

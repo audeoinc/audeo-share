@@ -1,0 +1,32 @@
+{
+  "contract_version": "1.0",
+  "warmup_iterations": 3,
+  "measured_iterations": 15,
+  "full_suite_iterations": 3,
+  "max_stability_ratio": 6.0,
+  "max_heap_delta_mb": 96,
+  "max_suite_average_ms": 1000,
+  "min_suite_analyses_per_second": 1,
+  "workloads": [
+    {
+      "case_name": "basic_expression",
+      "max_median_ms": 250,
+      "max_p95_ms": 1000
+    },
+    {
+      "case_name": "complex_cte_wildcard_window",
+      "max_median_ms": 1000,
+      "max_p95_ms": 4000
+    },
+    {
+      "case_name": "deep_correlated_subquery",
+      "max_median_ms": 1000,
+      "max_p95_ms": 4000
+    },
+    {
+      "case_name": "production_data_mart",
+      "max_median_ms": 1000,
+      "max_p95_ms": 4000
+    }
+  ]
+}

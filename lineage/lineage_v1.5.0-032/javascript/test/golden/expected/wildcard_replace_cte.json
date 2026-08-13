@@ -1,0 +1,56 @@
+{
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_ITEMS",
+      "column_name": "ORDER_ID",
+      "ordinal_position": 1
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_ITEMS",
+      "column_name": "AMOUNT",
+      "ordinal_position": 2
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_ITEMS",
+      "column_name": "QUANTITY",
+      "ordinal_position": 3
+    }
+  ],
+  "outputs": [
+    {
+      "name": "ORDER_ID",
+      "scope_id": 1,
+      "expression_text": "* REPLACE(amount*quantity AS AMOUNT)",
+      "dependencies": [
+        "PROJECT_ID.DATASET.SALES_ITEMS.ORDER_ID"
+      ]
+    },
+    {
+      "name": "AMOUNT",
+      "scope_id": 1,
+      "expression_text": "* REPLACE(amount*quantity AS AMOUNT)",
+      "dependencies": [
+        "PROJECT_ID.DATASET.SALES_ITEMS.AMOUNT",
+        "PROJECT_ID.DATASET.SALES_ITEMS.QUANTITY"
+      ]
+    },
+    {
+      "name": "QUANTITY",
+      "scope_id": 1,
+      "expression_text": "* REPLACE(amount*quantity AS AMOUNT)",
+      "dependencies": [
+        "PROJECT_ID.DATASET.SALES_ITEMS.QUANTITY"
+      ]
+    }
+  ],
+  "purpose": "Regression coverage for wildcard_replace_cte.",
+  "coverage": [
+    "Existing Golden Regression"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "gcs_bundle_uri": "gs://YOUR_BUCKET/lineage/releases/{version}/lineage_udf_bundle.js",
+  "gcs_zip_uri": "gs://YOUR_BUCKET/lineage/releases/{version}/lineage_v{version}.zip",
+  "bigquery_project": "YOUR_PROJECT",
+  "bigquery_dataset": "YOUR_DATASET",
+  "bigquery_function": "analyze_lineage",
+  "repository_validation_sql": "../tests/integration/05_repository_integration_test.sql"
+}

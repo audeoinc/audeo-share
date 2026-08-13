@@ -1,0 +1,88 @@
+{
+  "purpose": "Verify CASE expression with correlated EXISTS and physical dependencies from both scopes.",
+  "coverage": [
+    "Issue-0003 Correlated Subquery",
+    "CASE Expression",
+    "EXISTS"
+  ],
+  "analysis_status": "COMPLETED",
+  "warning_count": 0,
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "ORDER_ID",
+      "ordinal_position": 1
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "CUSTOMER_ID",
+      "ordinal_position": 2
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "ORDER_TOTAL",
+      "ordinal_position": 3
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "ORDER_DATE",
+      "ordinal_position": 4
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "UPDATED_AT",
+      "ordinal_position": 5
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMERS",
+      "column_name": "CUSTOMER_ID",
+      "ordinal_position": 1
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMERS",
+      "column_name": "NAME",
+      "ordinal_position": 2
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMERS",
+      "column_name": "REGION",
+      "ordinal_position": 3
+    }
+  ],
+  "outputs": [
+    {
+      "name": "CUSTOMER_ID",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMERS.CUSTOMER_ID"
+      ]
+    },
+    {
+      "name": "CUSTOMER_LABEL",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMERS.NAME",
+        "PROJECT_ID.DATASET.CUSTOMERS.REGION",
+        "PROJECT_ID.DATASET.ORDERS.CUSTOMER_ID",
+        "PROJECT_ID.DATASET.CUSTOMERS.CUSTOMER_ID",
+        "PROJECT_ID.DATASET.ORDERS.ORDER_TOTAL"
+      ]
+    }
+  ]
+}

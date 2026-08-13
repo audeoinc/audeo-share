@@ -1,0 +1,65 @@
+{
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "ORDER_ID",
+      "ordinal_position": 1
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "CUSTOMER_ID",
+      "ordinal_position": 2
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "AMOUNT",
+      "ordinal_position": 3
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "UPDATED_AT",
+      "ordinal_position": 4
+    }
+  ],
+  "outputs": [
+    {
+      "name": "ORDER_ID",
+      "scope_id": 1,
+      "expression_text": "* EXCEPT(UPDATED_AT)",
+      "dependencies": [
+        "PROJECT_ID.DATASET.ORDERS.ORDER_ID"
+      ]
+    },
+    {
+      "name": "CUSTOMER_ID",
+      "scope_id": 1,
+      "expression_text": "* EXCEPT(UPDATED_AT)",
+      "dependencies": [
+        "PROJECT_ID.DATASET.ORDERS.CUSTOMER_ID"
+      ]
+    },
+    {
+      "name": "AMOUNT",
+      "scope_id": 1,
+      "expression_text": "* EXCEPT(UPDATED_AT)",
+      "dependencies": [
+        "PROJECT_ID.DATASET.ORDERS.AMOUNT"
+      ]
+    }
+  ],
+  "absent_outputs": [
+    "UPDATED_AT"
+  ],
+  "purpose": "Regression coverage for wildcard_except_physical.",
+  "coverage": [
+    "Existing Golden Regression"
+  ]
+}

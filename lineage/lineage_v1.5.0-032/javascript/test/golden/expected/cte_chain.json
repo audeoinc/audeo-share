@@ -1,0 +1,43 @@
+{
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_PURCHASE_HISTORY",
+      "column_name": "CUSTOMER_ID"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_PURCHASE_HISTORY",
+      "column_name": "UNIT_PRICE"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_PURCHASE_HISTORY",
+      "column_name": "QUANTITY"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "CUSTOMER_ID",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMER_PURCHASE_HISTORY.CUSTOMER_ID"
+      ]
+    },
+    {
+      "name": "TOTAL_AMOUNT",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMER_PURCHASE_HISTORY.QUANTITY",
+        "PROJECT_ID.DATASET.CUSTOMER_PURCHASE_HISTORY.UNIT_PRICE"
+      ]
+    }
+  ],
+  "purpose": "Regression coverage for cte_chain.",
+  "coverage": [
+    "Existing Golden Regression"
+  ]
+}
