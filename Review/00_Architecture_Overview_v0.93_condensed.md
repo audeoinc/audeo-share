@@ -1,8 +1,8 @@
 # BigQuery Physical Lineage Architecture Overview
 
-> **Version:** 0.91 Condensed Draft  
-> **Source document:** Architecture Overview v0.91 Draft  
-> **Implementation baseline:** lineage v1.5.0-028
+> **Version:** 0.93 Condensed Draft  
+> **Source document:** Architecture Overview v0.93 Draft  
+> **Implementation baseline:** lineage v1.5.0-030
 
 ---
 
@@ -49,7 +49,46 @@ BigQueryを利用したデータ基盤では、テーブル、View、Scheduled Q
 - Repositoryへ依存情報を登録する
 - 影響範囲をRankまたは深さとして提示する
 
-## 1.3 解決する運用課題
+## 1.3 動作イメージ：入力SQLとImpact出力
+
+本システムは、解析対象SQLからカラム間のDirect Dependencyを生成し、Repositoryへ登録する。影響分析では、登録済みのDependencyを多段に連結し、変更元カラムから下流カラムまでのImpactをRank順に返す。
+
+```sql
+-- 解析対象SQL 1
+CREATE VIEW mart.order_summary AS
+SELECT
+  customer_id,
+  SUM(amount) AS total_amount
+FROM raw.orders
+GROUP BY customer_id;
+
+-- 解析対象SQL 2
+CREATE VIEW mart.customer_sales AS
+SELECT
+  customer_id,
+  total_amount AS customer_sales_amount
+FROM mart.order_summary;
+```
+
+JavaScript UDFが生成するDirect Dependencyは次のとおりである。
+
+| 出力カラム | 直接の参照元カラム |
+|---|---|
+| `mart.order_summary.customer_id` | `raw.orders.customer_id` |
+| `mart.order_summary.total_amount` | `raw.orders.amount` |
+| `mart.customer_sales.customer_id` | `mart.order_summary.customer_id` |
+| `mart.customer_sales.customer_sales_amount` | `mart.order_summary.total_amount` |
+
+`raw.orders.amount`を変更元としてImpactを検索すると、次の結果を得る。
+
+| 変更元カラム | 影響先オブジェクト | 影響先カラム | Rank | 依存経路 |
+|---|---|---|---:|---|
+| `raw.orders.amount` | `mart.order_summary` | `total_amount` | 1 | `raw.orders.amount → mart.order_summary.total_amount` |
+| `raw.orders.amount` | `mart.customer_sales` | `customer_sales_amount` | 2 | `raw.orders.amount → mart.order_summary.total_amount → mart.customer_sales.customer_sales_amount` |
+
+SQL解析の結果は、単なる参照テーブル一覧ではなく、変更元カラムから下流カラムまでのImpactとして利用する。
+
+## 1.4 解決する運用課題
 
 ### 影響調査の精度不足
 
@@ -157,16 +196,31 @@ Google Cloud公式仕様：
 
 Looker StudioはRepositoryの利用手段であり、中心となるのはRepositoryの精度と鮮度である。
 
-影響先のオブジェクト・カラムに加え、次の情報を表示する。
+現行のRepositoryでは、依存経路、生成種別、解決状態を確認できる。Direct Dependencyには、出力カラムを生成したSELECT式も記録する。
 
-| 項目 | 内容 |
+UDF内部の`ColumnResolver`は参照ごとに`SELECT`、`WHERE`、`JOIN_ON`などの`clause_type`を保持している。一方、現行パイプラインでは`lineage_direct_dependency.usage_type`を一律`SELECT`として登録し、`lineage_impact`には利用箇所を保持していない。
+
+このため、Clause内での利用箇所をImpactで表示する機能は現時点では未提供である。UDF内部の情報をRepository・Impactへ引き継ぐことは、今後のImpact詳細化で対応する候補とする。
+
+### `lineage_impact`の主要カラム
+
+| カラム群 | 意味 |
 |---|---|
-| `impact_type` | 影響経路の分類 |
-| `dependency_usage_type` | SELECT、WHERE、JOINなどの利用箇所 |
-| `dependency_path_display` | 変更元から影響先までの表示用経路 |
-| `impacted_expression` | 影響先のSQL式 |
+| `origin_*` | 変更影響の起点 |
+| `impact_rank` | 起点から影響先までの段数。1は直接依存 |
+| `impacted_*` | 起点から到達した下流の影響先 |
+| `direct_source_*` | その影響先へ直接つながる最後の1段の参照元 |
+| `dependency_path` | 起点から影響先までの完全な経路 |
+| `path_hash` | 経路の識別子 |
+| `is_cycle` | 循環経路か |
 
-`dependency_usage_type`は現時点ではClause単位の分類であり、式内部での意味的な役割まで完全に分類するものではない。
+```text
+raw.orders.amount
+  → mart.order_summary.total_amount
+  → mart.customer_sales.customer_sales_amount
+```
+
+この場合、Rank 2の`impacted_*`は`mart.customer_sales.customer_sales_amount`、`direct_source_*`は直前の`mart.order_summary.total_amount`となる。つまり、前者は到達した影響先、後者はそこへ直接つながる最後の1段を表す。
 
 ---
 
@@ -186,14 +240,14 @@ Looker StudioはRepositoryの利用手段であり、中心となるのはReposi
 
 ## 3.2 比較結果
 
-| 方式 | 適用性 | 採用 | 理由 |
-|---|---:|:---:|---|
-| INFORMATION_SCHEMAのみ | 低い | × | Metadata取得には有効だが、SELECT式内のカラム対応を取得できない |
-| 文字列検索 | 低い | × | 別名、Scope、式構造を区別できない |
-| 正規表現 | 限定的 | × | 再帰構造、CTE、サブクエリ、括弧Scopeを安定して処理しにくい |
-| BigQuery SQLのみ | 限定的 | × | 状態管理、Token走査、再帰解析の保守性が低い |
-| 既存SQL Parser | 条件付き | × | BigQuery固有構文、UDF統合、必要な出力形式への適合コストがある |
-| 独自JavaScript Parser + Resolver | 高い | ○ | 必要な構文とRepository要件に合わせて段階的に実装・検証できる |
+| 方式 | 想定している実装 | 適用性 | 採用 | 理由 |
+|---|---|---:|:---:|---|
+| INFORMATION_SCHEMAのみ | BigQueryのMetadata Viewだけを参照し、SQL本文は構文解析しない | 低い | × | Metadata取得には有効だが、SELECT式内のカラム対応を取得できない |
+| 文字列検索 | BigQuery SQLまたはJavaScriptで、SQL文字列中の語句を一致検索する | 低い | × | 別名、Scope、式構造を区別できない |
+| 正規表現 | BigQuery SQLまたはJavaScriptで、正規表現によりSQL断片を抽出する | 限定的 | × | 再帰構造、CTE、サブクエリ、括弧Scopeを安定して処理しにくい |
+| BigQuery SQLのみ | Token表・再帰CTE・SQL ScriptだけでParser相当を実装する | 限定的 | × | 状態管理、Token走査、再帰解析の保守性が低い |
+| 既存SQL Parser | 外部Parserをbundleへ組み込み、JavaScript UDFから利用する | 条件付き | × | BigQuery固有構文、UDF統合、必要な出力形式への適合コストがある |
+| 独自JavaScript Parser + Resolver | JavaScript UDFで解析・依存解決し、BigQuery SQLでMetadata取得・登録・Impact展開を行う | 高い | ○ | 必要な構文とRepository要件に合わせて段階的に実装・検証できる |
 
 ## 3.3 BigQuery SQLだけでの実装が難しい理由
 
@@ -274,6 +328,20 @@ flowchart TB
 ```
 
 図の`Persistent JavaScript UDF`内が、JavaScriptで実行される解析処理である。公開入口である`LineageEngine`が、Lexer、Parser、Resolver、Exporterを定められた順序で呼び出す。SQLの構造と参照関係をJavaScript UDF内で解決した後、BigQuery SQLパイプラインが結果を検証し、Repositoryへ永続化する。
+
+### JavaScript UDF bundleの構成
+
+処理フローのLexerからBigQueryExporterまでを実装した成果物が、BigQuery JavaScript UDFから読み込むbundleである。bundleには、次のJavaScriptモジュール群が含まれる。
+
+| レイヤ | 主な構成要素 | 役割 |
+|---|---|---|
+| 字句解析 | `Lexer`、`TokenReader` | SQL文字列をToken列へ変換し、安全なToken走査を提供する |
+| 構文解析 | `QueryParser`、Clause別Parser、`ExpressionParser` | Query、Clause、式の構造を解析する |
+| AST | `AstFactory`、`NodeType` | AST Nodeの定義、生成、検証を集約する |
+| 参照解決 | Resolver Pipeline | CTE、別名、Metadataを用いて物理カラムと依存経路を解決する |
+| 出力・診断 | `BigQueryExporter`、`DiagnosticEngine` | BigQuery登録用の結果と診断情報を生成する |
+
+本資料の実装ベースラインであるlineage v1.5.0-028に対応するbundleは、資料と同じ階層へ配置する。[lineage_udf_bundle.js](./lineage_udf_bundle.js)
 
 ## 4.2 Lexer
 
@@ -403,6 +471,18 @@ flowchart TB
     MUL --> U[unit_price]
     MUL --> T[tax_rate]
 ```
+
+### AST
+
+ASTは、SQL式を単なるカラム名の一覧ではなく、演算子と左右の関係を持つ木構造として表す。例えば`quantity * unit_price`は、概略として次の構造になる。
+
+```text
+ARITHMETIC_EXPRESSION: *
+├─ IDENTIFIER_EXPRESSION: quantity
+└─ IDENTIFIER_EXPRESSION: unit_price
+```
+
+この構造により、`quantity`と`unit_price`が同じ式に含まれるだけでなく、乗算の左辺・右辺として使われていることを保持できる。
 
 「再帰」とは、括弧内の式、関数引数、CASE式など、式の中に別の式が現れた場合に同じ解析規則を内側へ適用することを指す。スカラサブクエリやEXISTSでは、内側のSELECT Tokenを切り出して`QueryParser`を再帰的に呼び出す。
 
@@ -612,6 +692,7 @@ Python UDFの総額はQueryの`total_bytes_billed`だけでは算出できない
 | Token Reader | ParserによるToken列の参照、移動、巻き戻し、範囲抽出を共通化する処理 |
 | Parser | Token列をSQL構造として解釈する処理 |
 | AST | SQL式やStatement構造を表す抽象構文木 |
+| Unary Expression | `-price`や`NOT is_deleted`のように、一つの式へ単項演算子を適用した式。`-price`では`price`がPrimary Expressionであり、`-price`全体がUnary Expressionとなる |
 | AstFactory | AST Nodeの定義、生成、入力値検証を担当するFactory |
 | Resolver | AST上の参照をCTE、別名、Metadataから具体的な参照元へ解決する処理 |
 | Scope | Queryごとに分離されたSource・CTE・別名の参照可能範囲 |
