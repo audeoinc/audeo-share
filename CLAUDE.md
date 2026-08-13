@@ -36,7 +36,7 @@ JavaScript エンジンと、それを日次で回す BigQuery パイプライ�
 cd javascript
 node scripts/build_udf.js       # src → dist/lineage_udf_bundle.js を再生成
 node scripts/verify_bundle.js   # バンドルの API とスモーク解析を検証
-npm run test:release            # リリース回帰（28 本、test_v1_5_0_048 … 014）
+npm run test:release            # リリース回帰（41 本、test_v1_5_0_061 … 014）
 node test/test_v1_5_0_003.js    # ゴールデン回帰（48 ケース）
 npm test                        # build + verify:bundle + test:release を一括
 ```
@@ -51,16 +51,17 @@ npm test                        # build + verify:bundle + test:release を一括
 1 変更 = 「実装 + 番号付き回帰テスト + CHANGELOG 追記」をワンセットにする。
 
 - 回帰テストは `javascript/test/test_v1_5_0_0XX.js` を新規作成し、`package.json` の
-  `test:release` チェーンの先頭に追加する（番号は連番、現行最新は 048）。
+  `test:release` チェーンの先頭に追加する（番号は連番、現行最新は 061）。
 - `CHANGELOG.md` の現行バージョン見出し直下に、症状・原因・修正・対象テストを追記。
 - 詳細な変更手順・単位は `docs/DEVELOPMENT_GUIDE.md` に従う。
 
-## 5. 二本ツリー運用
+## 5. リポジトリ運用
 
-作業ツリー `lineage_v1.5.0-031`（source of truth）と成果物ツリー
-`lineage_v1.5.0-032`（deliverable）を **常に同一内容** に保つ。片方に入れた変更は
-必ずもう片方へ反映し、`diff -rq`（node_modules / *.zip / .git 除外）で一致を確認する。
-※ 単一リポジトリで運用する場合は、このセクションは「main で一元管理」に読み替えてよい。
+本リポジトリ直下が成果物ツリー（deliverable）そのものであり、`main` で一元管理する。
+以前は作業ツリー `lineage_v1.5.0-031`（source of truth）と成果物ツリー
+`lineage_v1.5.0-032`（deliverable）を二本並行で同一内容に保つ運用だったが、単一
+リポジトリへ統合済みのため二本ツリー同期は不要。変更は作業ブランチへ直接コミットし、
+`main` へ取り込む。
 
 ## 6. コーディング規約・環境固有の注意
 

@@ -132,7 +132,7 @@ WHERE job_id = 'SCRIPT_JOB_ID';
 
 ## 現在の状態
 
-SQL、検証、総合試験、24個のJavaScriptソース、確定bundle、46件のGolden regression、性能回帰契約、LTSドキュメントを収録しています。実環境の実行結果、Looker Studio画面、ライセンスは導入環境で確定後に追加します。
+SQL、検証、総合試験、24個のJavaScriptソース、確定bundle、48件のGolden regression、性能回帰契約、LTSドキュメントを収録しています。実環境の実行結果、Looker Studio画面、ライセンスは導入環境で確定後に追加します。
 
 ## ライセンス
 
