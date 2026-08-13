@@ -1,0 +1,142 @@
+{
+  "purpose": "Verify a reporting-view pattern that joins customer and order data, ranks rows and publishes the latest order per customer.",
+  "coverage": [
+    "Production SQL",
+    "Reporting View",
+    "JOIN",
+    "Window Function",
+    "QUALIFY",
+    "Wildcard EXCEPT"
+  ],
+  "analysis_status": "COMPLETED",
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "ORDER_ID",
+      "ordinal_position": 1
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "CUSTOMER_ID",
+      "ordinal_position": 2
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "ORDER_TOTAL",
+      "ordinal_position": 3
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "ORDER_DATE",
+      "ordinal_position": 4
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "STATUS",
+      "ordinal_position": 5
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMERS",
+      "column_name": "CUSTOMER_ID",
+      "ordinal_position": 1
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMERS",
+      "column_name": "NAME",
+      "ordinal_position": 2
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMERS",
+      "column_name": "REGION",
+      "ordinal_position": 3
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "PAYMENTS",
+      "column_name": "PAYMENT_ID",
+      "ordinal_position": 1
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "PAYMENTS",
+      "column_name": "ORDER_ID",
+      "ordinal_position": 2
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "PAYMENTS",
+      "column_name": "AMOUNT",
+      "ordinal_position": 3
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "PAYMENTS",
+      "column_name": "PAYMENT_DATE",
+      "ordinal_position": 4
+    }
+  ],
+  "outputs": [
+    {
+      "name": "CUSTOMER_ID",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMERS.CUSTOMER_ID"
+      ]
+    },
+    {
+      "name": "NAME",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMERS.NAME"
+      ]
+    },
+    {
+      "name": "REGION",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMERS.REGION"
+      ]
+    },
+    {
+      "name": "LATEST_ORDER_ID",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.ORDERS.ORDER_ID"
+      ]
+    },
+    {
+      "name": "LATEST_ORDER_TOTAL",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.ORDERS.ORDER_TOTAL"
+      ]
+    },
+    {
+      "name": "LATEST_ORDER_DATE",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.ORDERS.ORDER_DATE"
+      ]
+    }
+  ]
+}

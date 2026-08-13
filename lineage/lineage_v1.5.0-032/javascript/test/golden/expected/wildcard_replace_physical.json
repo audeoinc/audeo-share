@@ -1,0 +1,40 @@
+{
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "ORDER_ID",
+      "ordinal_position": 1
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "AMOUNT",
+      "ordinal_position": 2
+    }
+  ],
+  "outputs": [
+    {
+      "name": "ORDER_ID",
+      "scope_id": 1,
+      "expression_text": "* REPLACE(amount*1.1 AS AMOUNT)",
+      "dependencies": [
+        "PROJECT_ID.DATASET.ORDERS.ORDER_ID"
+      ]
+    },
+    {
+      "name": "AMOUNT",
+      "scope_id": 1,
+      "expression_text": "* REPLACE(amount*1.1 AS AMOUNT)",
+      "dependencies": [
+        "PROJECT_ID.DATASET.ORDERS.AMOUNT"
+      ]
+    }
+  ],
+  "purpose": "Regression coverage for wildcard_replace_physical.",
+  "coverage": [
+    "Existing Golden Regression"
+  ]
+}

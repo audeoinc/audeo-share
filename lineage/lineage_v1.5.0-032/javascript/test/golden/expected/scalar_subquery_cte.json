@@ -1,0 +1,29 @@
+{
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "CUSTOMER_ID"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "ORDER_TOTAL"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "MAX_CUSTOMER_TOTAL",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.ORDERS.ORDER_TOTAL"
+      ]
+    }
+  ],
+  "purpose": "Regression coverage for scalar_subquery_cte.",
+  "coverage": [
+    "Existing Golden Regression"
+  ]
+}

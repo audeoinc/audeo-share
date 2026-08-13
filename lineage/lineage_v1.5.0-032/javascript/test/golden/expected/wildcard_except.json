@@ -1,0 +1,49 @@
+{
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_PURCHASE_HISTORY",
+      "column_name": "ORDER_ID",
+      "ordinal_position": 1
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_PURCHASE_HISTORY",
+      "column_name": "UNIT_PRICE",
+      "ordinal_position": 2
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_PURCHASE_HISTORY",
+      "column_name": "QUANTITY",
+      "ordinal_position": 3
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_PURCHASE_HISTORY",
+      "column_name": "DISCOUNT_RATE",
+      "ordinal_position": 4
+    }
+  ],
+  "outputs": [
+    {
+      "name": "GROSS_AMOUNT",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMER_PURCHASE_HISTORY.QUANTITY",
+        "PROJECT_ID.DATASET.CUSTOMER_PURCHASE_HISTORY.UNIT_PRICE"
+      ]
+    }
+  ],
+  "absent_outputs": [
+    "DISCOUNT_RATE"
+  ],
+  "purpose": "Regression coverage for wildcard_except.",
+  "coverage": [
+    "Existing Golden Regression"
+  ]
+}

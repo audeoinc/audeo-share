@@ -1,0 +1,11 @@
+SELECT
+  customer_id,
+  region
+FROM `PROJECT_ID.DATASET.CUSTOMER_CURRENT`
+
+UNION DISTINCT
+
+SELECT
+  customer_key,
+  sales_region
+FROM `PROJECT_ID.DATASET.CUSTOMER_ARCHIVE`

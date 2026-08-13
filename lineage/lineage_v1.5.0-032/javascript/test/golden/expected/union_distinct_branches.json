@@ -1,0 +1,50 @@
+{
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_CURRENT",
+      "column_name": "CUSTOMER_ID"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_CURRENT",
+      "column_name": "REGION"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_ARCHIVE",
+      "column_name": "CUSTOMER_KEY"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_ARCHIVE",
+      "column_name": "SALES_REGION"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "CUSTOMER_ID",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMER_ARCHIVE.CUSTOMER_KEY",
+        "PROJECT_ID.DATASET.CUSTOMER_CURRENT.CUSTOMER_ID"
+      ]
+    },
+    {
+      "name": "REGION",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMER_ARCHIVE.SALES_REGION",
+        "PROJECT_ID.DATASET.CUSTOMER_CURRENT.REGION"
+      ]
+    }
+  ],
+  "purpose": "Regression coverage for union_distinct_branches.",
+  "coverage": [
+    "Existing Golden Regression"
+  ]
+}

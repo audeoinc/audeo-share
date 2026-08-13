@@ -1,0 +1,42 @@
+{
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES",
+      "column_name": "CUSTOMER_ID"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES",
+      "column_name": "CATEGORY"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES",
+      "column_name": "AMOUNT"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "PC_SALES",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.SALES.AMOUNT"
+      ]
+    },
+    {
+      "name": "AV_SALES",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.SALES.AMOUNT"
+      ]
+    }
+  ],
+  "purpose": "Regression coverage for pivot.",
+  "coverage": [
+    "Existing Golden Regression"
+  ]
+}

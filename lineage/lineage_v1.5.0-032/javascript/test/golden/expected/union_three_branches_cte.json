@@ -1,0 +1,64 @@
+{
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_CURRENT",
+      "column_name": "ORDER_ID"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_CURRENT",
+      "column_name": "AMOUNT"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_ARCHIVE",
+      "column_name": "LEGACY_ORDER_ID"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_ARCHIVE",
+      "column_name": "GROSS_AMOUNT"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_RETURNS",
+      "column_name": "RETURN_ID"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_RETURNS",
+      "column_name": "REFUND_AMOUNT"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "ORDER_ID",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.SALES_ARCHIVE.LEGACY_ORDER_ID",
+        "PROJECT_ID.DATASET.SALES_CURRENT.ORDER_ID",
+        "PROJECT_ID.DATASET.SALES_RETURNS.RETURN_ID"
+      ]
+    },
+    {
+      "name": "AMOUNT",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.SALES_ARCHIVE.GROSS_AMOUNT",
+        "PROJECT_ID.DATASET.SALES_CURRENT.AMOUNT",
+        "PROJECT_ID.DATASET.SALES_RETURNS.REFUND_AMOUNT"
+      ]
+    }
+  ],
+  "purpose": "Regression coverage for union_three_branches_cte.",
+  "coverage": [
+    "Existing Golden Regression"
+  ]
+}

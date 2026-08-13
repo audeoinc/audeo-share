@@ -1,0 +1,55 @@
+{
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "ORDER_ID",
+      "ordinal_position": 1
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "AMOUNT",
+      "ordinal_position": 2
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "STATUS",
+      "ordinal_position": 3
+    }
+  ],
+  "outputs": [
+    {
+      "name": "ORDER_ID",
+      "scope_id": 1,
+      "expression_text": "* REPLACE(amount*1.1 AS AMOUNT, UPPER(status) AS STATUS)",
+      "dependencies": [
+        "PROJECT_ID.DATASET.ORDERS.ORDER_ID"
+      ]
+    },
+    {
+      "name": "AMOUNT",
+      "scope_id": 1,
+      "expression_text": "* REPLACE(amount*1.1 AS AMOUNT, UPPER(status) AS STATUS)",
+      "dependencies": [
+        "PROJECT_ID.DATASET.ORDERS.AMOUNT"
+      ]
+    },
+    {
+      "name": "STATUS",
+      "scope_id": 1,
+      "expression_text": "* REPLACE(amount*1.1 AS AMOUNT, UPPER(status) AS STATUS)",
+      "dependencies": [
+        "PROJECT_ID.DATASET.ORDERS.STATUS"
+      ]
+    }
+  ],
+  "purpose": "Regression coverage for wildcard_replace_multiple.",
+  "coverage": [
+    "Existing Golden Regression"
+  ]
+}

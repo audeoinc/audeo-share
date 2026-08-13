@@ -1,0 +1,44 @@
+{
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMERS",
+      "column_name": "CUSTOMER_ID"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "CUSTOMER_ID"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "ORDER_TOTAL"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "CUSTOMER_ID",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMERS.CUSTOMER_ID"
+      ]
+    },
+    {
+      "name": "MAX_ORDER_TOTAL",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMERS.CUSTOMER_ID",
+        "PROJECT_ID.DATASET.ORDERS.CUSTOMER_ID",
+        "PROJECT_ID.DATASET.ORDERS.ORDER_TOTAL"
+      ]
+    }
+  ],
+  "purpose": "Regression coverage for correlated_subquery_basic.",
+  "coverage": [
+    "Existing Golden Regression"
+  ]
+}

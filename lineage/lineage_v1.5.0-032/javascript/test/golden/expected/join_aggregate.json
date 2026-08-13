@@ -1,0 +1,55 @@
+{
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_PURCHASE_HISTORY",
+      "column_name": "CUSTOMER_ID"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_PURCHASE_HISTORY",
+      "column_name": "UNIT_PRICE"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_PURCHASE_HISTORY",
+      "column_name": "QUANTITY"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_MASTER",
+      "column_name": "CUSTOMER_ID"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_MASTER",
+      "column_name": "REGION"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "REGION",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMER_MASTER.REGION"
+      ]
+    },
+    {
+      "name": "REGION_SALES",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMER_PURCHASE_HISTORY.QUANTITY",
+        "PROJECT_ID.DATASET.CUSTOMER_PURCHASE_HISTORY.UNIT_PRICE"
+      ]
+    }
+  ],
+  "purpose": "Regression coverage for join_aggregate.",
+  "coverage": [
+    "Existing Golden Regression"
+  ]
+}

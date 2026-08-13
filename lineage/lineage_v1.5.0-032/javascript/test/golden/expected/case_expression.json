@@ -1,0 +1,50 @@
+{
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_PURCHASE_HISTORY",
+      "column_name": "CUSTOMER_ID"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_PURCHASE_HISTORY",
+      "column_name": "UNIT_PRICE"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_PURCHASE_HISTORY",
+      "column_name": "QUANTITY"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_PURCHASE_HISTORY",
+      "column_name": "DISCOUNT_RATE"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "CUSTOMER_ID",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMER_PURCHASE_HISTORY.CUSTOMER_ID"
+      ]
+    },
+    {
+      "name": "PURCHASE_CLASS",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMER_PURCHASE_HISTORY.DISCOUNT_RATE",
+        "PROJECT_ID.DATASET.CUSTOMER_PURCHASE_HISTORY.QUANTITY",
+        "PROJECT_ID.DATASET.CUSTOMER_PURCHASE_HISTORY.UNIT_PRICE"
+      ]
+    }
+  ],
+  "purpose": "Regression coverage for case_expression.",
+  "coverage": [
+    "Existing Golden Regression"
+  ]
+}

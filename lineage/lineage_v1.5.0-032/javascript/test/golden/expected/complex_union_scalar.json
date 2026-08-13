@@ -1,0 +1,72 @@
+{
+  "purpose": "Verify UNION branch lineage and a scalar subquery in the same outer query.",
+  "coverage": [
+    "Issue-0001 UNION",
+    "Issue-0002 Scalar Subquery",
+    "CTE"
+  ],
+  "analysis_status": "COMPLETED",
+  "warning_count": 0,
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_CURRENT",
+      "column_name": "ORDER_ID",
+      "ordinal_position": 1
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_CURRENT",
+      "column_name": "AMOUNT",
+      "ordinal_position": 2
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_ARCHIVE",
+      "column_name": "LEGACY_ORDER_ID",
+      "ordinal_position": 1
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "SALES_ARCHIVE",
+      "column_name": "GROSS_AMOUNT",
+      "ordinal_position": 2
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "LIMITS",
+      "column_name": "MAX_AMOUNT",
+      "ordinal_position": 1
+    }
+  ],
+  "outputs": [
+    {
+      "name": "ORDER_ID",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.SALES_CURRENT.ORDER_ID",
+        "PROJECT_ID.DATASET.SALES_ARCHIVE.LEGACY_ORDER_ID"
+      ]
+    },
+    {
+      "name": "AMOUNT",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.SALES_CURRENT.AMOUNT",
+        "PROJECT_ID.DATASET.SALES_ARCHIVE.GROSS_AMOUNT"
+      ]
+    },
+    {
+      "name": "GLOBAL_LIMIT",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.LIMITS.MAX_AMOUNT"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMERS",
+      "column_name": "CUSTOMER_ID",
+      "ordinal_position": 1
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMERS",
+      "column_name": "NAME",
+      "ordinal_position": 2
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "CUSTOMER_ID",
+      "ordinal_position": 1
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "ORDERS",
+      "column_name": "ORDER_TOTAL",
+      "ordinal_position": 2
+    }
+  ],
+  "outputs": [
+    {
+      "name": "CUSTOMER_ID",
+      "scope_id": 1,
+      "expression_text": "C.* REPLACE(UPPER(c.name) AS NAME)",
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMERS.CUSTOMER_ID"
+      ]
+    },
+    {
+      "name": "NAME",
+      "scope_id": 1,
+      "expression_text": "C.* REPLACE(UPPER(c.name) AS NAME)",
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMERS.NAME"
+      ]
+    },
+    {
+      "name": "ORDER_TOTAL",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.ORDERS.ORDER_TOTAL"
+      ]
+    }
+  ],
+  "purpose": "Regression coverage for wildcard_replace_alias.",
+  "coverage": [
+    "Existing Golden Regression"
+  ]
+}

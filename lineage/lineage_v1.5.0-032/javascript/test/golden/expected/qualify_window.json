@@ -1,0 +1,50 @@
+{
+  "physical_columns": [
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_PURCHASE_HISTORY",
+      "column_name": "CUSTOMER_ID"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_PURCHASE_HISTORY",
+      "column_name": "ORDER_ID"
+    },
+    {
+      "project_id": "PROJECT_ID",
+      "dataset_id": "DATASET",
+      "table_name": "CUSTOMER_PURCHASE_HISTORY",
+      "column_name": "PURCHASE_DATE"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "CUSTOMER_ID",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMER_PURCHASE_HISTORY.CUSTOMER_ID"
+      ]
+    },
+    {
+      "name": "ORDER_ID",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMER_PURCHASE_HISTORY.ORDER_ID"
+      ]
+    },
+    {
+      "name": "ORDER_RANK",
+      "scope_id": 1,
+      "dependencies": [
+        "PROJECT_ID.DATASET.CUSTOMER_PURCHASE_HISTORY.CUSTOMER_ID",
+        "PROJECT_ID.DATASET.CUSTOMER_PURCHASE_HISTORY.PURCHASE_DATE"
+      ]
+    }
+  ],
+  "purpose": "Regression coverage for qualify_window.",
+  "coverage": [
+    "Existing Golden Regression"
+  ]
+}
