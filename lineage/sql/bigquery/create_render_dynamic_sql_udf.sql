@@ -9,30 +9,24 @@
 -- without re-running full setup. The function is a pure SQL scalar UDF and does
 -- not depend on the JavaScript bundle.
 --
--- 03 references this function by the fully-qualified name
--- `<repository_project>.<repository_dataset>.render_dynamic_sql`; keep the
--- values below (and the literal in 03) in step with the repository location.
+-- It is created in the UDF dataset, alongside analyze_lineage_json. 03 invokes
+-- it dynamically using its udf_project_id / udf_dataset DECLAREs, so keep the
+-- values below in step with the UDF location.
 -- ============================================================================
 SET @@location = 'asia-northeast1';
 
 BEGIN
-  DECLARE repository_project_id STRING DEFAULT 'project_id';
-  DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
+  DECLARE udf_project_id STRING DEFAULT 'project_id';
+  DECLARE udf_dataset STRING DEFAULT 'dataset';
 
-  DECLARE repository_dataset_full_name STRING DEFAULT FORMAT(
-    '%s.%s',
-    repository_project_id,
-    repository_dataset
-  );
-
-  ASSERT REGEXP_CONTAINS(repository_project_id, r'^[A-Za-z0-9._:-]+$')
-  AS 'Invalid repository_project_id.';
-  ASSERT REGEXP_CONTAINS(repository_dataset, r'^[A-Za-z0-9_]+$')
-  AS 'Invalid repository_dataset.';
+  ASSERT REGEXP_CONTAINS(udf_project_id, r'^[A-Za-z0-9._:-]+$')
+  AS 'Invalid udf_project_id.';
+  ASSERT REGEXP_CONTAINS(udf_dataset, r'^[A-Za-z0-9_]+$')
+  AS 'Invalid udf_dataset.';
 
   EXECUTE IMMEDIATE FORMAT(
     '''
-    CREATE OR REPLACE FUNCTION `%s.render_dynamic_sql`(
+    CREATE OR REPLACE FUNCTION `%s.%s.render_dynamic_sql`(
       sql_template STRING,
       repository_project_id STRING,
       repository_dataset STRING,
@@ -91,11 +85,12 @@ BEGIN
       )
     )
     ''',
-    repository_dataset_full_name
+    udf_project_id,
+    udf_dataset
   );
 
   SELECT
-    FORMAT('%s.render_dynamic_sql', repository_dataset_full_name)
+    FORMAT('%s.%s.render_dynamic_sql', udf_project_id, udf_dataset)
       AS recreated_function,
     CURRENT_TIMESTAMP() AS recreated_at;
 END;

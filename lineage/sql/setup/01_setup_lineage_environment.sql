@@ -349,15 +349,14 @@ EXECUTE IMMEDIATE FORMAT(
 -- console's "All results" list showed only "create temp function
 -- render_dynamic_sql(" for each statement. Deploying it as a persistent function
 -- here removes that prepend, so each statement (and the per-step progress
--- markers) shows its own SQL. The function is created in the repository dataset;
--- 03 references it by the fully-qualified name
--- `<repository_project>.<repository_dataset>.render_dynamic_sql`, so keep the
--- literal in 03 in step with bootstrap_repository_project_id /
--- bootstrap_repository_dataset here.
+-- markers) shows its own SQL. The function is created in the UDF dataset,
+-- alongside analyze_lineage_json (bootstrap_udf_project_id /
+-- bootstrap_udf_dataset). 03 invokes it dynamically using its udf_project_id /
+-- udf_dataset DECLAREs, so keep this deployment location in step with those.
 -- ============================================================================
 EXECUTE IMMEDIATE FORMAT(
   '''
-  CREATE OR REPLACE FUNCTION `%s.render_dynamic_sql`(
+  CREATE OR REPLACE FUNCTION `%s.%s.render_dynamic_sql`(
     sql_template STRING,
     repository_project_id STRING,
     repository_dataset STRING,
@@ -416,7 +415,8 @@ EXECUTE IMMEDIATE FORMAT(
     )
   )
   ''',
-  repository_dataset_full_name
+  bootstrap_udf_project_id,
+  bootstrap_udf_dataset
 );
 
 -- ============================================================================

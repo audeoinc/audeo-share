@@ -1,5 +1,23 @@
 # 1.5.0-032
 
+- Relocated the persistent `render_dynamic_sql` to the UDF dataset (alongside
+  `analyze_lineage_json`) and made its location DECLARE-configurable in 03.
+  `01_setup_lineage_environment.sql` now creates it at
+  `bootstrap_udf_project_id.bootstrap_udf_dataset` instead of the repository
+  dataset; `sql/bigquery/create_render_dynamic_sql_udf.sql` matches. A static
+  function reference cannot use a variable for its project/dataset, so 03 no
+  longer hardcodes `` `project_id.lineage_repository.render_dynamic_sql` `` at 32
+  sites. Instead it builds one reusable dynamic call, `render_call_sql`, right
+  after the `repo_tables` block — `SELECT
+  `udf_project_id.udf_dataset.render_udf_function_name`(@sql_template, <baked
+  config>)` — and every call site runs `EXECUTE IMMEDIATE render_call_sql INTO
+  rendered_sql USING sql_template AS sql_template`. The renderer location is now
+  driven by the existing `udf_project_id` / `udf_dataset` DECLAREs plus a new
+  `render_udf_function_name` DECLARE (default `render_dynamic_sql`); only
+  `@sql_template` is bound per call (the fixed config is baked in once), so no
+  STRUCT query parameter is needed. SQL-only change; the engine bundle is
+  unaffected. Not yet validated against BigQuery.
+
 - Moved `render_dynamic_sql` from a script TEMP FUNCTION in
   `03_run_daily_lineage_pipeline.sql` to a **persistent SQL function** created by
   `01_setup_lineage_environment.sql` in the repository dataset, and made the

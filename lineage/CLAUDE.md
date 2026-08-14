@@ -77,10 +77,13 @@ npm test                        # build + verify:bundle + test:release を一括
   - `OFFSET` / `ORDINAL` は予約キーワード、`SAFE_OFFSET` / `SAFE_ORDINAL` は識別子。
   - 名前フィルタの正規表現は大文字小文字を無視：`REGEXP_CONTAINS(LOWER(name), LOWER(pattern))`。
 - **03 パイプラインの構造**：`render_dynamic_sql`（8 プレースホルダ / 9 パラメータ）で
-  テンプレート置換 → `EXECUTE IMMEDIATE`。この関数は **01 setup が作る永続関数**で、03 からは
-  `` `project_id.lineage_repository.render_dynamic_sql` `` の修飾名で呼ぶ（旧: スクリプト内
-  TEMP FUNCTION）。TEMP FUNCTION は BigQuery が全子ジョブの SQL 冒頭に DDL を前置し、コンソール
-  「All results」が全部同じ表示になるため永続化した。本体変更時は
+  テンプレート置換 → `EXECUTE IMMEDIATE`。この関数は **01 setup が UDF Dataset（`analyze_lineage_json`
+  と同じ場所 = `udf_project_id.udf_dataset`）に作る永続関数**（旧: スクリプト内 TEMP FUNCTION。
+  BigQuery が全子ジョブの SQL 冒頭に TEMP FUNCTION DDL を前置し「All results」が全部同表示に
+  なるため永続化）。静的呼び出しは関数名に変数を使えないため、03 は `udf_project_id` /
+  `udf_dataset` / `render_udf_function_name` から**呼び出し文 `render_call_sql` を1回組み立てて
+  動的に呼ぶ**（`repo_tables` 直後で構築、各所は `EXECUTE IMMEDIATE render_call_sql INTO
+  rendered_sql USING sql_template`）。これで設置場所が DECLARE 可変になる。本体変更時は
   `sql/bigquery/create_render_dynamic_sql_udf.sql` で再配備。STEP1=VIEW 収集、
   STEP2=JOBS 収集、STEP3/4=解析。region は単一の `job_region`（`@@location`）。
   JOBS の重複除去はフィンガープリント方式（一時/ローテーション/期限付き宛先は

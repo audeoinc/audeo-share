@@ -20,12 +20,14 @@ SET @@location = 'asia-northeast1';
 -- persistent function nothing is prepended, so each statement (and the per-step
 -- progress markers below) shows its own SQL.
 --
--- It is referenced by the fully-qualified literal
--- `project_id.lineage_repository.render_dynamic_sql`. Keep that literal in step
--- with repository_project_id / repository_dataset below and with the deployment
--- location in 01 (bootstrap_repository_project_id / bootstrap_repository_dataset).
--- Only SQL identifiers are replaced here; runtime values must continue to be
--- passed with EXECUTE IMMEDIATE ... USING.
+-- It lives alongside the JavaScript UDF (analyze_lineage_json) at
+-- udf_project_id.udf_dataset. Because a static function reference cannot use a
+-- variable for its project/dataset, it is invoked through one reusable dynamic
+-- statement (render_call_sql, built once after the repo_tables block below) so
+-- the location stays DECLARE-configurable via udf_project_id / udf_dataset /
+-- render_udf_function_name. Keep the deployment location in 01 in step with
+-- those DECLAREs. Only SQL identifiers are replaced here; runtime values must
+-- continue to be passed with EXECUTE IMMEDIATE ... USING.
 
 BEGIN
 -- ============================================================================
@@ -227,6 +229,14 @@ DECLARE repo_tables STRUCT<
 DECLARE sql_template STRING;
 DECLARE rendered_sql STRING;
 
+-- render_dynamic_sql is a PERSISTENT function co-located with the JavaScript UDF
+-- (analyze_lineage_json) at udf_project_id.udf_dataset. It is invoked through one
+-- reusable dynamic statement (render_call_sql, built once below) so its location
+-- stays DECLARE-configurable via udf_project_id / udf_dataset -- a static function
+-- reference cannot use a variable. Set render_udf_function_name to rename it.
+DECLARE render_udf_function_name STRING DEFAULT 'render_dynamic_sql';
+DECLARE render_call_sql STRING;
+
 -- Work variables for building the cross-dataset source-metadata union SQL.
 DECLARE columns_union_sql STRING;
 DECLARE field_paths_union_sql STRING;
@@ -265,6 +275,20 @@ SET repo_tables = STRUCT(
   table_impact AS impact,
   table_diagnostic AS diagnostic,
   table_job_registry AS job_registry
+);
+
+-- Build the persistent-renderer call once and reuse it for every template.
+-- The function location comes from udf_project_id / udf_dataset (same place as
+-- analyze_lineage_json) via render_udf_function_name; only @sql_template varies
+-- per call, so the fixed configuration is baked in here. Every call site then
+-- runs: EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template.
+SET render_call_sql = FORMAT(
+  """SELECT `%s.%s.%s`(@sql_template, '%s', '%s', '%s', '%s', '%s', '%s', '%s', STRUCT('%s' AS def_registry, '%s' AS direct_dep, '%s' AS impact, '%s' AS diagnostic, '%s' AS job_registry))""",
+  udf_project_id, udf_dataset, render_udf_function_name,
+  repository_project_id, repository_dataset, target_project_id, job_region,
+  udf_project_id, udf_dataset, udf_function_name,
+  repo_tables.def_registry, repo_tables.direct_dep, repo_tables.impact,
+  repo_tables.diagnostic, repo_tables.job_registry
 );
 
 -- Repository tables are always addressed through the __T_*__ placeholders and
@@ -622,17 +646,7 @@ BEGIN
         );
   """;
 
-  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in lineage_definition_registry MERGE SQL.';
@@ -661,17 +675,7 @@ BEGIN
       );
   """;
 
-  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in inactive VIEW registry UPDATE SQL.';
@@ -742,17 +746,7 @@ BEGIN
       execution_source
   """;
 
-  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in lineage_job_registry CREATE SQL.';
@@ -764,17 +758,7 @@ BEGIN
     FROM `__T_JOB_REGISTRY__`
   """;
 
-  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in lineage_job_registry count SQL.';
@@ -817,17 +801,7 @@ BEGIN
       AND statement_type IN UNNEST(@statement_types)
   """;
 
-  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in raw_generated_table_jobs SQL.';
@@ -1016,17 +990,7 @@ BEGIN
         );
   """;
 
-  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in lineage_job_registry MERGE SQL.';
@@ -1123,17 +1087,7 @@ BEGIN
     ) = 1
   """;
 
-  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in latest_generated_table_definitions SQL.';
@@ -1233,17 +1187,7 @@ BEGIN
         );
   """;
 
-  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in lineage_definition_registry MERGE SQL.';
@@ -1286,17 +1230,7 @@ BEGIN
       );
   """;
 
-  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in inactive generated-table registry UPDATE SQL.';
@@ -1330,17 +1264,7 @@ BEGIN
       );
   """;
 
-  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in ephemeral fingerprint age-out UPDATE SQL.';
@@ -1429,17 +1353,7 @@ BEGIN
     );
   """;
 
-  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in orphan direct-dependency DELETE SQL.';
@@ -1461,17 +1375,7 @@ BEGIN
     );
   """;
 
-  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in orphan diagnostic DELETE SQL.';
@@ -1592,17 +1496,7 @@ BEGIN
       )
   """;
 
-  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in changed-definitions materialization SQL.';
@@ -1636,17 +1530,7 @@ BEGIN
       AND object_type = 'VIEW'
   """;
 
-  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in active_view_definitions snapshot SQL.';
@@ -1697,17 +1581,7 @@ BEGIN
       changed_definitions_to_analyze
   """;
 
-  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in batch source-discovery SQL.';
@@ -2133,17 +2007,7 @@ BEGIN
       ) AS x
     """;
 
-    SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-      sql_template,
-      repository_project_id,
-      repository_dataset,
-      target_project_id,
-      job_region,
-      udf_project_id,
-      udf_dataset,
-      udf_function_name,
-      repo_tables
-    );
+    EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
     ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
     AS 'Unresolved placeholder in batch UDF analysis SQL.';
@@ -2660,17 +2524,7 @@ BEGIN
           AND dependency.generation_type = obj.generation_type
       )
     """;
-    SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-      sql_template,
-      repository_project_id,
-      repository_dataset,
-      target_project_id,
-      job_region,
-      udf_project_id,
-      udf_dataset,
-      udf_function_name,
-      repo_tables
-    );
+    EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
     ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
     AS 'Unresolved placeholder in batch dependency backup SQL.';
     EXECUTE IMMEDIATE rendered_sql;
@@ -2688,17 +2542,7 @@ BEGIN
           AND diagnostic.object_type = obj.object_type
       )
     """;
-    SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-      sql_template,
-      repository_project_id,
-      repository_dataset,
-      target_project_id,
-      job_region,
-      udf_project_id,
-      udf_dataset,
-      udf_function_name,
-      repo_tables
-    );
+    EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
     ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
     AS 'Unresolved placeholder in batch diagnostic backup SQL.';
     EXECUTE IMMEDIATE rendered_sql;
@@ -2722,11 +2566,7 @@ BEGIN
             AND dependency.generation_type = obj.generation_type
         )
       """;
-      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch dependency DELETE SQL.';
       EXECUTE IMMEDIATE rendered_sql;
@@ -2747,11 +2587,7 @@ BEGIN
           resolution_reason, edge_key, analyzed_at
         FROM batch_staged_direct_dependency
       """;
-      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch dependency INSERT SQL.';
       EXECUTE IMMEDIATE rendered_sql;
@@ -2770,11 +2606,7 @@ BEGIN
             AND diagnostic.object_type = obj.object_type
         )
       """;
-      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch diagnostic DELETE SQL.';
       EXECUTE IMMEDIATE rendered_sql;
@@ -2803,11 +2635,7 @@ BEGIN
           expression, message, diagnostic_json, analyzed_at
         FROM batch_preanalysis_diagnostic
       """;
-      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch diagnostic INSERT SQL.';
       EXECUTE IMMEDIATE rendered_sql;
@@ -2829,11 +2657,7 @@ BEGIN
           AND reg.generation_type = obj.generation_type
           AND reg.definition_hash = obj.definition_hash
       """;
-      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch registry COMPLETED UPDATE SQL.';
       EXECUTE IMMEDIATE rendered_sql
@@ -2866,11 +2690,7 @@ BEGIN
           AND reg.generation_type = obj.generation_type
           AND reg.definition_hash = obj.definition_hash
       """;
-      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch registry FAILED UPDATE SQL.';
       EXECUTE IMMEDIATE rendered_sql
@@ -2894,11 +2714,7 @@ BEGIN
             AND dependency.generation_type = obj.generation_type
         )
       """;
-      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch rollback dependency DELETE SQL.';
       EXECUTE IMMEDIATE rendered_sql;
@@ -2907,11 +2723,7 @@ BEGIN
         INSERT INTO `__T_DIRECT_DEP__`
         SELECT * FROM batch_previous_direct_dependency
       """;
-      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch rollback dependency INSERT SQL.';
       EXECUTE IMMEDIATE rendered_sql;
@@ -2927,11 +2739,7 @@ BEGIN
             AND diagnostic.object_type = obj.object_type
         )
       """;
-      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch rollback diagnostic DELETE SQL.';
       EXECUTE IMMEDIATE rendered_sql;
@@ -2940,11 +2748,7 @@ BEGIN
         INSERT INTO `__T_DIAGNOSTIC__`
         SELECT * FROM batch_previous_lineage_diagnostic
       """;
-      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch rollback diagnostic INSERT SQL.';
       EXECUTE IMMEDIATE rendered_sql;
@@ -3118,17 +2922,7 @@ BEGIN
       ) AS error_diagnostic_count
   """;
 
-  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in STEP 3 run summary SQL.';
@@ -3289,17 +3083,7 @@ BEGIN
   FROM impact_tree
   """;
 
-  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in lineage_impact rebuild SQL.';
@@ -3320,17 +3104,7 @@ BEGIN
       ) AS impact_row_count
   """;
 
-  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in REBUILD_IMPACT summary SQL.';
@@ -3371,17 +3145,7 @@ SET sql_template = """
     ) AS error_diagnostic_count
 """;
 
-SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
-  sql_template,
-  repository_project_id,
-  repository_dataset,
-  target_project_id,
-  job_region,
-  udf_project_id,
-  udf_dataset,
-  udf_function_name,
-  repo_tables
-);
+EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
 ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
 AS 'Unresolved placeholder in pipeline summary SQL.';
