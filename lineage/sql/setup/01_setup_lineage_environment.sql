@@ -22,7 +22,9 @@ SET @@location = 'asia-northeast1';
 -- ============================================================================
 DECLARE bootstrap_repository_project_id STRING DEFAULT 'project_id';
 DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository';
-DECLARE bootstrap_repository_location STRING DEFAULT 'asia-northeast1';
+-- Derived from `SET @@location` at the top (single source of truth): the
+-- repository lives in the location this setup runs in. Set the region only there.
+DECLARE bootstrap_repository_location STRING DEFAULT @@location;
 
 DECLARE bootstrap_udf_project_id STRING DEFAULT 'project_id';
 DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';

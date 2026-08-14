@@ -8,7 +8,15 @@
   region-qualified INFORMATION_SCHEMA identifiers (`region-<job_region>`), which
   cannot be parameterized. The `ASSERT @@location = job_region` equality check is
   removed (the values can no longer drift); the `job_region` format ASSERT
-  remains. Verified in BigQuery that `DEFAULT @@location` is accepted.
+  remains. Verified in BigQuery that `DEFAULT @@location` is accepted. Applied the
+  same single-source treatment to the setup and validation scripts:
+  `01_setup_lineage_environment.sql` now declares
+  `bootstrap_repository_location DEFAULT @@location`, and
+  `04_validate_lineage_environment.sql` declares both
+  `bootstrap_repository_location` and `bootstrap_target_region`
+  `DEFAULT @@location`. 04's "repository and target location match" check (id 20)
+  is now structurally guaranteed to PASS and is kept only to surface the resolved
+  region in the report.
 
 - Declared and created `render_dynamic_sql` with the same convention as the
   analyze / fingerprint UDFs. 03 now declares `udf_render_function_name` in the

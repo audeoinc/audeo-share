@@ -14,7 +14,10 @@ SET @@location = 'asia-northeast1';
 -- ============================================================================
 DECLARE bootstrap_repository_project_id STRING DEFAULT 'project_id';
 DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository';
-DECLARE bootstrap_repository_location STRING DEFAULT 'asia-northeast1';
+-- Region values derive from `SET @@location` at the top (single source of truth,
+-- single-region design): validation runs in that location and the repository and
+-- target metadata must be there too. Set the region only at @@location.
+DECLARE bootstrap_repository_location STRING DEFAULT @@location;
 
 DECLARE bootstrap_udf_project_id STRING DEFAULT 'project_id';
 DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';
@@ -23,7 +26,7 @@ DECLARE bootstrap_udf_library_uri STRING DEFAULT
   'gs://YOUR_BUCKET/YOUR_PATH/lineage_udf_bundle.js';
 
 DECLARE bootstrap_target_project_id STRING DEFAULT 'project_id';
-DECLARE bootstrap_target_region STRING DEFAULT 'asia-northeast1';
+DECLARE bootstrap_target_region STRING DEFAULT @@location;
 DECLARE bootstrap_target_datasets ARRAY<STRING> DEFAULT ['dataset'];
 
 DECLARE bootstrap_parser_strict_mode BOOL DEFAULT FALSE;
@@ -82,6 +85,8 @@ SET udf_full_name = FORMAT(
 -- ============================================================================
 -- 2. Configuration integrity
 -- ============================================================================
+-- Both region values now derive from @@location, so this check is structurally
+-- guaranteed to PASS; it is kept to surface the resolved region in the report.
 INSERT INTO validation_result
 SELECT
   20,
