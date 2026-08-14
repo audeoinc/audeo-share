@@ -87,8 +87,13 @@ npm test                        # build + verify:bundle + test:release を一括
 
 - バンドル: `sha256 = 0a31b8c9a86faae55f8108e94b7a237906add0e96da6cd6b823f026371a8e3c5`、`441569` bytes
 - `test:release` 41 本 PASS / ゴールデン 48 ケース PASS
-- 直近の修正: 03 の**2つのUDFパス**（ソース探索 `discovery_udf_chunk_size` / STEP 3 解析
-  `analysis_udf_chunk_size`、各既定200件ずつ INSERT ループ）をチャンク分割し、対象増加時の
-  "UDF out of memory"（スロット上の V8 ヒープ蓄積）を回避。STEP 3 のみのチャンクでは探索パスが
-  未分割で残りOOM継続 → 探索も分割。SQLのみ・バンドル不変・BigQuery 未検証。詳細は
-  `docs/SESSION_HANDOFF.md` と `CHANGELOG.md` 冒頭。
+- 直近の修正: 03 STEP 3 を**データセット単位のループ**へ変更し、UDF チャンク分割を撤去。
+  リージョン全体を1パスで解析すると V8 ヒープ蓄積で "UDF out of memory" になり、行数チャンクでも
+  大オブジェクトが偏ると OOM が続いた。実運用で「1データセットずつなら通る」ことを確認済みのため、
+  STEP 3 の 変更検知→探索→解析→direct-dependency publish を
+  `FOR ds_row IN (SELECT ds FROM UNNEST(target_datasets) ...) DO ... END FOR` で囲い、
+  各反復で `analysis_include_dataset_patterns=['^ds$']` に絞る。探索・解析とも単一クエリに復帰
+  （`*_udf_chunk_*`・`udf_chunk`・2つの `WHILE` を削除）。ループ外に残すもの＝target_datasets 解決／
+  グローバルメタデータ（STEP 1 で全 target dataset 分ロード、跨ぎ参照を保持）／orphan cleanup／
+  STEP 4 Impact 再構築（データセット跨ぎのため最後に1回）。カウンタは反復加算、run summary はループ後1回。
+  SQLのみ・バンドル不変・**BigQuery 未検証**。詳細は `CHANGELOG.md` 冒頭。

@@ -1,5 +1,36 @@
 # 1.5.0-032
 
+- Replaced the fixed-size UDF chunking in `03_run_daily_lineage_pipeline.sql`
+  STEP 3 with a **per-dataset analysis loop**, and removed the chunking. Running
+  the per-row JavaScript lineage UDF across every changed object in the region in
+  one pass accumulated V8 heap in the per-slot UDF context and hit "Resource
+  exceeded during query execution: UDF out of memory" at thousands of objects;
+  row-count chunking bounded the invocation count per job but not the aggregate
+  memory when large objects clustered in a chunk, so it still OOMed. Operators
+  confirmed that analyzing one dataset at a time succeeds, so STEP 3 now wraps the
+  change-detection → source-discovery → analysis → direct-dependency publish body
+  in `FOR ds_row IN (SELECT ds FROM UNNEST(target_datasets) ... ) DO ... END FOR`,
+  scoping the analysis set to a single dataset per iteration via an anchored
+  `['^' || ds || '$']` include pattern. The loop list still honors the configured
+  `analysis_include_dataset_patterns` / `analysis_exclude_dataset_patterns`.
+  Per-dataset scoping shrinks not just the UDF row-batch but every intermediate
+  (`changed_definitions_with_discovery`, `batch_object_metadata`,
+  `batch_analysis_input`, `batch_udf_results`), which is why one dataset at a time
+  stays under the UDF memory ceiling. Both UDF passes (source discovery and STEP 3
+  analysis) are back to a single query each — the `discovery_udf_chunk_*` /
+  `analysis_udf_chunk_*` DECLAREs, the `udf_chunk` bucket column, and the two
+  `WHILE` chunk loops are gone. What stays outside the loop: `target_datasets`
+  resolution, the global physical-metadata snapshot (`current_target_columns`,
+  loaded once in STEP 1 across all target datasets, so cross-dataset source
+  references still resolve), the orphan-row cleanup, and the STEP 4 impact rebuild
+  (impact spans datasets, so it runs once after all direct dependencies are
+  published). The `analyzed_object_count` / `failed_object_count` counters now
+  accumulate across iterations and the run summary is emitted once after the loop.
+  Registry status updates were already scoped to the analyzed batch subset
+  (`batch_completed_objects` and the failed set), so per-dataset iteration does not
+  touch other datasets' rows. SQL-only change; the engine bundle is unaffected.
+  Not yet validated against BigQuery.
+
 - Also chunked the batch **source-discovery** UDF pass, which the STEP 3 chunking
   had missed. `03_run_daily_lineage_pipeline.sql` runs the JavaScript UDF a
   second time over every changed definition in `source_discovery_only` mode to

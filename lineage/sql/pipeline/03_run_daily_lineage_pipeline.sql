@@ -1454,16 +1454,6 @@ BEGIN
   DECLARE analyzed_object_count INT64 DEFAULT 0;
   DECLARE failed_object_count INT64 DEFAULT 0;
 
-  -- Source discovery runs the JavaScript UDF across every changed definition,
-  -- like the STEP 3 analysis pass, and at large target counts it likewise
-  -- accumulates V8 heap in the per-slot UDF context and hits "Resource exceeded
-  -- during query execution: UDF out of memory". It is therefore run in
-  -- fixed-size chunks (one EXECUTE IMMEDIATE job per chunk). Lower this if OOM
-  -- persists; keep it roughly in step with analysis_udf_chunk_size below.
-  DECLARE discovery_udf_chunk_size INT64 DEFAULT 200;
-  DECLARE discovery_udf_chunk_count INT64 DEFAULT 0;
-  DECLARE discovery_udf_chunk_index INT64 DEFAULT 0;
-
   -- --------------------------------------------------------------------------
   -- Remove repository rows whose target definition is no longer active.
   -- --------------------------------------------------------------------------
@@ -1533,11 +1523,45 @@ BEGIN
   EXECUTE IMMEDIATE rendered_sql;
 
   -- --------------------------------------------------------------------------
-  -- Analyze active definitions whose current definition has changed.
+  -- Per-dataset analysis loop.
   --
-  -- The changed-definition set is materialized into a temporary table through
-  -- dynamic SQL so that the repository table name stays configurable while the
-  -- FOR ... IN loop query itself remains static.
+  -- The JavaScript lineage UDF is a per-row scalar function; running it across
+  -- every changed object in the region in a single pass accumulates V8 heap in
+  -- the per-slot UDF context and hits "Resource exceeded during query execution:
+  -- UDF out of memory" at large target counts. Iterating one target dataset at a
+  -- time bounds how many objects a single UDF pass processes, which keeps the UDF
+  -- under the per-slot memory ceiling (the empirically safe unit of work).
+  --
+  -- Loop only over datasets that pass the configured analysis include/exclude
+  -- dataset filters; inside the loop the analysis set is scoped to the single
+  -- current dataset via an anchored (^ds$) include pattern. The orphan cleanup
+  -- above and the impact rebuild (STEP 4) stay outside the loop; the global
+  -- metadata snapshot (current_target_columns, loaded once in STEP 1) covers all
+  -- target datasets, so cross-dataset source references still resolve while each
+  -- pass analyzes a single dataset. Loop body indentation is kept flat to bound
+  -- the diff; every statement through the inner analysis block runs per dataset.
+  -- --------------------------------------------------------------------------
+  FOR ds_row IN (
+    SELECT ds
+    FROM UNNEST(target_datasets) AS ds
+    WHERE (
+      ARRAY_LENGTH(analysis_include_dataset_patterns) = 0
+      OR EXISTS (
+        SELECT 1
+        FROM UNNEST(analysis_include_dataset_patterns) AS pattern
+        WHERE REGEXP_CONTAINS(LOWER(ds), LOWER(pattern))
+      )
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM UNNEST(analysis_exclude_dataset_patterns) AS pattern
+      WHERE REGEXP_CONTAINS(LOWER(ds), LOWER(pattern))
+    )
+    ORDER BY ds
+  ) DO
+
+  -- --------------------------------------------------------------------------
+  -- Materialize the changed-definition set for the current dataset only.
   -- --------------------------------------------------------------------------
   SET sql_template = """
     CREATE OR REPLACE TEMP TABLE changed_definitions_to_analyze AS
@@ -1621,8 +1645,11 @@ BEGIN
     process_generated_tables AS include_tables,
     analysis_include_object_patterns AS include_patterns,
     analysis_exclude_object_patterns AS exclude_patterns,
-    analysis_include_dataset_patterns AS include_dataset_patterns,
-    analysis_exclude_dataset_patterns AS exclude_dataset_patterns;
+    -- Scope this pass to the current dataset only (anchored exact match). The
+    -- loop list already applied the configured include/exclude dataset filters,
+    -- so the per-object filters above are all that remain to vary here.
+    ['^' || ds_row.ds || '$'] AS include_dataset_patterns,
+    CAST([] AS ARRAY<STRING>) AS exclude_dataset_patterns;
 
   -- Snapshot the active VIEW registry once so the per-object staging query can
   -- classify source object types without referencing the (configurable-named)
@@ -1673,8 +1700,10 @@ BEGIN
   -- source_discovery_json cell. The loop still validates the per-object status
   -- and RAISEs into this object's EXCEPTION handler exactly as before.
   -- --------------------------------------------------------------------------
-  -- Create the discovery result table empty (WHERE FALSE: the UDF is not
-  -- evaluated, only the schema is fixed), then fill it one chunk per job.
+  -- Build the discovery result table in a single UDF query over the current
+  -- dataset's changed set. Per-dataset scoping (the enclosing loop) bounds the
+  -- UDF invocation count; source_discovery_only never throws, so a failing
+  -- object surfaces only as its own source_discovery_json cell.
   SET sql_template = """
     CREATE OR REPLACE TEMP TABLE changed_definitions_with_discovery AS
     SELECT
@@ -1693,66 +1722,6 @@ BEGIN
       ) AS source_discovery_json
     FROM
       changed_definitions_to_analyze
-    WHERE FALSE
-  """;
-
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
-
-  ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
-  AS 'Unresolved placeholder in batch source-discovery result-table SQL.';
-
-  EXECUTE IMMEDIATE rendered_sql
-  USING
-    TO_JSON_STRING(STRUCT(TRUE AS source_discovery_only)) AS options_json;
-
-  SET discovery_udf_chunk_count = (
-    SELECT DIV(COUNT(*) + discovery_udf_chunk_size - 1, discovery_udf_chunk_size)
-    FROM changed_definitions_to_analyze
-  );
-
-  -- Per-chunk INSERT. A row's chunk is its ROW_NUMBER (over the full changed set)
-  -- bucketed by @chunk_size; the UDF is evaluated only for the selected chunk, so
-  -- each job runs at most @chunk_size invocations.
-  SET sql_template = """
-    INSERT INTO changed_definitions_with_discovery
-    SELECT
-      object_project,
-      object_dataset,
-      object_name,
-      object_type,
-      generation_type,
-      definition_text,
-      definition_hash,
-      `__UDF__`(
-        definition_text,
-        '[]',
-        @options_json,
-        NULL
-      ) AS source_discovery_json
-    FROM (
-      SELECT
-        c.*,
-        DIV(
-          ROW_NUMBER() OVER (
-            ORDER BY
-              object_project, object_dataset, object_name,
-              object_type, generation_type, definition_hash
-          ) - 1,
-          @chunk_size
-        ) AS discovery_chunk
-      FROM changed_definitions_to_analyze AS c
-    )
-    WHERE discovery_chunk = @chunk_index
   """;
 
   SET rendered_sql = render_dynamic_sql(
@@ -1770,17 +1739,9 @@ BEGIN
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in batch source-discovery SQL.';
 
-  SET discovery_udf_chunk_index = 0;
-
-  WHILE discovery_udf_chunk_index < discovery_udf_chunk_count DO
-    EXECUTE IMMEDIATE rendered_sql
-    USING
-      TO_JSON_STRING(STRUCT(TRUE AS source_discovery_only)) AS options_json,
-      discovery_udf_chunk_size AS chunk_size,
-      discovery_udf_chunk_index AS chunk_index;
-
-    SET discovery_udf_chunk_index = discovery_udf_chunk_index + 1;
-  END WHILE;
+  EXECUTE IMMEDIATE rendered_sql
+  USING
+    TO_JSON_STRING(STRUCT(TRUE AS source_discovery_only)) AS options_json;
 
   -- ==========================================================================
   -- Batch analysis and publish (full set-based STEP 3).
@@ -1818,18 +1779,6 @@ BEGIN
     -- visible inside the publish block's EXCEPTION handler: BigQuery does not
     -- expose a variable to the EXCEPTION section of the same BEGIN block.
     DECLARE publish_err_message STRING;
-
-    -- The lineage UDF is run in fixed-size chunks rather than one query over all
-    -- analyzable objects. A single query calling the JavaScript UDF across
-    -- thousands of rows accumulates V8 heap in the per-slot UDF context and hits
-    -- "Resource exceeded during query execution: UDF out of memory" as the target
-    -- set grows (no single object is large; the peak is aggregate). Splitting the
-    -- run into separate EXECUTE IMMEDIATE jobs of analysis_udf_chunk_size rows
-    -- each bounds how many invocations share a context. Lower this if OOM
-    -- persists; raise it to reduce per-run job overhead.
-    DECLARE analysis_udf_chunk_size INT64 DEFAULT 200;
-    DECLARE analysis_udf_chunk_count INT64 DEFAULT 0;
-    DECLARE analysis_udf_chunk_index INT64 DEFAULT 0;
 
     -- ------------------------------------------------------------------------
     -- 1. Scope physical-column metadata for every object with COMPLETED source
@@ -2111,24 +2060,7 @@ BEGIN
     CREATE OR REPLACE TEMP TABLE batch_analysis_input AS
     SELECT
       t.*,
-      (t.preanalysis_failure_reason IS NULL) AS is_analyzable,
-      -- Chunk number for the UDF run. Analyzable rows are numbered contiguously
-      -- (partitioned on analyzability so the numbering ignores skipped rows) and
-      -- grouped into buckets of analysis_udf_chunk_size; non-analyzable rows get
-      -- NULL. The UDF is executed one chunk per job to bound per-context memory.
-      CASE
-        WHEN t.preanalysis_failure_reason IS NULL THEN
-          DIV(
-            ROW_NUMBER() OVER (
-              PARTITION BY (t.preanalysis_failure_reason IS NULL)
-              ORDER BY
-                t.object_project, t.object_dataset, t.object_name,
-                t.object_type, t.generation_type, t.definition_hash
-            ) - 1,
-            analysis_udf_chunk_size
-          )
-        ELSE NULL
-      END AS udf_chunk
+      (t.preanalysis_failure_reason IS NULL) AS is_analyzable
     FROM (
       SELECT
         c.object_project,
@@ -2167,15 +2099,13 @@ BEGIN
     ) AS t;
 
     -- ------------------------------------------------------------------------
-    -- 3. Run the persistent lineage UDF for every analyzable object, in
-    -- fixed-size chunks. A single query calling the JavaScript UDF across all
-    -- rows accumulates V8 heap in the per-slot UDF context and hits "UDF out of
-    -- memory" as the target set grows, even though no single object is large.
-    -- The result table is created empty once (WHERE FALSE, so the UDF is not
-    -- evaluated but the schema is fixed), then one INSERT job per chunk appends
-    -- its rows. Each job/context handles at most analysis_udf_chunk_size
-    -- invocations. The result JSON lives in a table column (no 1 MiB
-    -- script-variable limit).
+    -- 3. Run the persistent lineage UDF over every analyzable object in the
+    -- current dataset in a single query. Per-dataset scoping (the enclosing
+    -- loop) bounds how many objects share one per-slot UDF context, which keeps
+    -- the JavaScript UDF under the memory ceiling that a region-wide single pass
+    -- would blow ("Resource exceeded during query execution: UDF out of
+    -- memory"). The result JSON lives in a table column (no 1 MiB script-
+    -- variable limit).
     -- ------------------------------------------------------------------------
     SET sql_template = """
       CREATE OR REPLACE TEMP TABLE batch_udf_results AS
@@ -2220,84 +2150,7 @@ BEGIN
             ))
           ) AS exported_json
         FROM batch_analysis_input AS p
-        WHERE FALSE
-      ) AS x
-    """;
-
-    SET rendered_sql = render_dynamic_sql(
-      sql_template,
-      repository_project_id,
-      repository_dataset,
-      target_project_id,
-      job_region,
-      udf_project_id,
-      udf_dataset,
-      udf_function_name,
-      repo_tables
-    );
-
-    ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
-    AS 'Unresolved placeholder in batch UDF result-table SQL.';
-
-    -- Create the empty result table (no UDF invocation: WHERE FALSE).
-    EXECUTE IMMEDIATE rendered_sql
-    USING
-      strict_mode AS strict_mode,
-      batch_analyzed_at AS analyzed_at,
-      FORMAT_TIMESTAMP('%FT%H:%M:%E*S%Ez', batch_analyzed_at) AS analyzed_at_iso;
-
-    SET analysis_udf_chunk_count = (
-      SELECT DIV(COUNT(*) + analysis_udf_chunk_size - 1, analysis_udf_chunk_size)
-      FROM batch_analysis_input
-      WHERE is_analyzable
-    );
-
-    -- Per-chunk INSERT template. Rendered once; @chunk_index selects the slice.
-    SET sql_template = """
-      INSERT INTO batch_udf_results
-      SELECT
-        x.object_project,
-        x.object_dataset,
-        x.object_name,
-        x.object_type,
-        x.generation_type,
-        x.definition_hash,
-        x.analysis_id,
-        x.analyzed_at,
-        x.exported_json,
-        COALESCE(
-          JSON_VALUE(x.exported_json, '$.analysis.analysis_status'),
-          'UNKNOWN'
-        ) AS udf_analysis_status,
-        JSON_VALUE(x.exported_json, '$.analysis.message') AS udf_analysis_message
-      FROM (
-        SELECT
-          p.object_project,
-          p.object_dataset,
-          p.object_name,
-          p.object_type,
-          p.generation_type,
-          p.definition_hash,
-          p.analysis_id,
-          @analyzed_at AS analyzed_at,
-          `__UDF__`(
-            p.definition_text,
-            p.physical_columns_json,
-            TO_JSON_STRING(STRUCT(
-              @strict_mode AS strict_mode,
-              TRUE AS compact_export
-            )),
-            TO_JSON_STRING(STRUCT(
-              p.analysis_id AS analysis_id,
-              p.object_project AS view_project,
-              p.object_dataset AS view_dataset,
-              p.object_name AS view_name,
-              @analyzed_at_iso AS analyzed_at
-            ))
-          ) AS exported_json
-        FROM batch_analysis_input AS p
         WHERE p.is_analyzable
-          AND p.udf_chunk = @chunk_index
       ) AS x
     """;
 
@@ -2316,18 +2169,11 @@ BEGIN
     ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
     AS 'Unresolved placeholder in batch UDF analysis SQL.';
 
-    SET analysis_udf_chunk_index = 0;
-
-    WHILE analysis_udf_chunk_index < analysis_udf_chunk_count DO
-      EXECUTE IMMEDIATE rendered_sql
-      USING
-        strict_mode AS strict_mode,
-        batch_analyzed_at AS analyzed_at,
-        FORMAT_TIMESTAMP('%FT%H:%M:%E*S%Ez', batch_analyzed_at) AS analyzed_at_iso,
-        analysis_udf_chunk_index AS chunk_index;
-
-      SET analysis_udf_chunk_index = analysis_udf_chunk_index + 1;
-    END WHILE;
+    EXECUTE IMMEDIATE rendered_sql
+    USING
+      strict_mode AS strict_mode,
+      batch_analyzed_at AS analyzed_at,
+      FORMAT_TIMESTAMP('%FT%H:%M:%E*S%Ez', batch_analyzed_at) AS analyzed_at_iso;
 
     -- ------------------------------------------------------------------------
     -- 4. Object key sets driving the set-based publish.
@@ -3247,19 +3093,25 @@ BEGIN
     -- ------------------------------------------------------------------------
     -- 9. Run counters for the summary below.
     -- ------------------------------------------------------------------------
-    SET analyzed_object_count = (
+    -- Accumulate across dataset iterations (declared 0 before the loop).
+    SET analyzed_object_count = analyzed_object_count + (
       SELECT COUNT(*) FROM batch_completed_objects
     );
-    SET failed_object_count = (
+    SET failed_object_count = failed_object_count + (
       SELECT COUNT(*) FROM batch_udf_failed_objects
     ) + (
       SELECT COUNT(*) FROM batch_preanalysis_failures
     );
   END;
 
+  END FOR;
+
   -- --------------------------------------------------------------------------
   -- Run summary.
   -- 04_rebuild_impact_table.sql is executed after this script in daily operation.
+  -- Reported once after the loop: the persisted repository tables reflect every
+  -- dataset's published results, and the run counters accumulated across
+  -- iterations.
   -- --------------------------------------------------------------------------
   SET sql_template = """
     SELECT
