@@ -1560,6 +1560,17 @@ BEGIN
     ORDER BY ds
   ) DO
 
+  -- Progress marker. BigQuery prepends the render_dynamic_sql TEMP FUNCTION DDL
+  -- to the query text of every child job that calls it, so the console's "All
+  -- results" list would otherwise show only "create temp function
+  -- render_dynamic_sql(" for each statement. This marker runs a dynamic SELECT
+  -- with the dataset name baked into the executed text (via FORMAT, not a bound
+  -- variable), so each iteration surfaces which dataset STEP 3 is processing.
+  EXECUTE IMMEDIATE FORMAT(
+    "SELECT '===== STEP 3 analysis | dataset: %s =====' AS processing_target",
+    ds_row.ds
+  );
+
   -- --------------------------------------------------------------------------
   -- Materialize the changed-definition set for the current dataset only.
   -- --------------------------------------------------------------------------

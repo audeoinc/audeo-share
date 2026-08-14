@@ -1,5 +1,16 @@
 # 1.5.0-032
 
+- Added a per-iteration progress marker to `03_run_daily_lineage_pipeline.sql`
+  STEP 3. Because `render_dynamic_sql` is a script TEMP FUNCTION, BigQuery
+  prepends its `CREATE TEMP FUNCTION` DDL to the query text of every child job
+  that calls it, so the console's "All results" list showed only "create temp
+  function render_dynamic_sql(" for each statement — and the per-dataset loop
+  multiplied those entries. Each loop iteration now runs
+  `EXECUTE IMMEDIATE FORMAT("SELECT '===== STEP 3 analysis | dataset: %s ====='
+  AS processing_target", ds_row.ds)` first, baking the dataset name into the
+  executed text so the All results list surfaces which dataset is being
+  processed. SQL-only change; the engine bundle is unaffected.
+
 - Replaced the fixed-size UDF chunking in `03_run_daily_lineage_pipeline.sql`
   STEP 3 with a **per-dataset analysis loop**, and removed the chunking. Running
   the per-row JavaScript lineage UDF across every changed object in the region in
