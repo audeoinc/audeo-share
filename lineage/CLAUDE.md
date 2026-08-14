@@ -81,7 +81,7 @@ npm test                        # build + verify:bundle + test:release を一括
   と同じ場所 = `udf_project_id.udf_dataset`）に作る永続関数**（旧: スクリプト内 TEMP FUNCTION。
   BigQuery が全子ジョブの SQL 冒頭に TEMP FUNCTION DDL を前置し「All results」が全部同表示に
   なるため永続化）。静的呼び出しは関数名に変数を使えないため、03 は `udf_project_id` /
-  `udf_dataset` / `render_udf_function_name` から**呼び出し文 `render_call_sql` を1回組み立てて
+  `udf_dataset` / `udf_render_function_name` から**呼び出し文 `render_call_sql` を1回組み立てて
   動的に呼ぶ**（`repo_tables` 直後で構築、各所は `EXECUTE IMMEDIATE render_call_sql INTO
   rendered_sql USING sql_template`）。これで設置場所が DECLARE 可変になる。本体変更時は
   `sql/bigquery/create_render_dynamic_sql_udf.sql` で再配備。STEP1=VIEW 収集、

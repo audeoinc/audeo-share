@@ -9,11 +9,11 @@
   longer hardcodes `` `project_id.lineage_repository.render_dynamic_sql` `` at 32
   sites. Instead it builds one reusable dynamic call, `render_call_sql`, right
   after the `repo_tables` block — `SELECT
-  `udf_project_id.udf_dataset.render_udf_function_name`(@sql_template, <baked
+  `udf_project_id.udf_dataset.udf_render_function_name`(@sql_template, <baked
   config>)` — and every call site runs `EXECUTE IMMEDIATE render_call_sql INTO
   rendered_sql USING sql_template AS sql_template`. The renderer location is now
   driven by the existing `udf_project_id` / `udf_dataset` DECLAREs plus a new
-  `render_udf_function_name` DECLARE (default `render_dynamic_sql`); only
+  `udf_render_function_name` DECLARE (default `render_dynamic_sql`); only
   `@sql_template` is bound per call (the fixed config is baked in once), so no
   STRUCT query parameter is needed. SQL-only change; the engine bundle is
   unaffected. Not yet validated against BigQuery.

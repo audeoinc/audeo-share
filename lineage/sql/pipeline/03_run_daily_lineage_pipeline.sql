@@ -25,7 +25,7 @@ SET @@location = 'asia-northeast1';
 -- variable for its project/dataset, it is invoked through one reusable dynamic
 -- statement (render_call_sql, built once after the repo_tables block below) so
 -- the location stays DECLARE-configurable via udf_project_id / udf_dataset /
--- render_udf_function_name. Keep the deployment location in 01 in step with
+-- udf_render_function_name. Keep the deployment location in 01 in step with
 -- those DECLAREs. Only SQL identifiers are replaced here; runtime values must
 -- continue to be passed with EXECUTE IMMEDIATE ... USING.
 
@@ -98,6 +98,11 @@ DECLARE udf_function_name STRING DEFAULT 'analyze_lineage_json';
 -- structurally-identical rotating-destination JOBS (temp / ephemeral) to one
 -- representative.
 DECLARE udf_fingerprint_function_name STRING DEFAULT 'fingerprint_lineage_sql';
+-- Companion dynamic-SQL renderer (registered by 01, same UDF dataset). Invoked
+-- dynamically (see render_call_sql) so its location stays DECLARE-configurable
+-- via udf_project_id / udf_dataset -- a static function reference cannot use a
+-- variable for its project/dataset.
+DECLARE udf_render_function_name STRING DEFAULT 'render_dynamic_sql';
 DECLARE parser_strict_mode BOOL DEFAULT FALSE;
 DECLARE configured_max_impact_rank INT64 DEFAULT 100;
 
@@ -229,12 +234,11 @@ DECLARE repo_tables STRUCT<
 DECLARE sql_template STRING;
 DECLARE rendered_sql STRING;
 
--- render_dynamic_sql is a PERSISTENT function co-located with the JavaScript UDF
--- (analyze_lineage_json) at udf_project_id.udf_dataset. It is invoked through one
--- reusable dynamic statement (render_call_sql, built once below) so its location
--- stays DECLARE-configurable via udf_project_id / udf_dataset -- a static function
--- reference cannot use a variable. Set render_udf_function_name to rename it.
-DECLARE render_udf_function_name STRING DEFAULT 'render_dynamic_sql';
+-- render_dynamic_sql (a PERSISTENT function co-located with the JavaScript UDF;
+-- its name is udf_render_function_name, declared with the other UDF names above)
+-- is invoked through one reusable dynamic statement, render_call_sql, built once
+-- below -- a static function reference cannot use a variable for its
+-- project/dataset, so the renderer location stays DECLARE-configurable.
 DECLARE render_call_sql STRING;
 
 -- Work variables for building the cross-dataset source-metadata union SQL.
@@ -279,12 +283,12 @@ SET repo_tables = STRUCT(
 
 -- Build the persistent-renderer call once and reuse it for every template.
 -- The function location comes from udf_project_id / udf_dataset (same place as
--- analyze_lineage_json) via render_udf_function_name; only @sql_template varies
+-- analyze_lineage_json) via udf_render_function_name; only @sql_template varies
 -- per call, so the fixed configuration is baked in here. Every call site then
 -- runs: EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template.
 SET render_call_sql = FORMAT(
   """SELECT `%s.%s.%s`(@sql_template, '%s', '%s', '%s', '%s', '%s', '%s', '%s', STRUCT('%s' AS def_registry, '%s' AS direct_dep, '%s' AS impact, '%s' AS diagnostic, '%s' AS job_registry))""",
-  udf_project_id, udf_dataset, render_udf_function_name,
+  udf_project_id, udf_dataset, udf_render_function_name,
   repository_project_id, repository_dataset, target_project_id, job_region,
   udf_project_id, udf_dataset, udf_function_name,
   repo_tables.def_registry, repo_tables.direct_dep, repo_tables.impact,
@@ -355,6 +359,8 @@ ASSERT REGEXP_CONTAINS(udf_function_name, r'^[A-Za-z0-9_]+$')
 AS 'Invalid udf_function_name.';
 ASSERT REGEXP_CONTAINS(udf_fingerprint_function_name, r'^[A-Za-z0-9_]+$')
 AS 'Invalid udf_fingerprint_function_name.';
+ASSERT REGEXP_CONTAINS(udf_render_function_name, r'^[A-Za-z0-9_]+$')
+AS 'Invalid udf_render_function_name.';
 ASSERT configured_max_impact_rank BETWEEN 1 AND 1000
 AS 'configured_max_impact_rank must be between 1 and 1000.';
 
