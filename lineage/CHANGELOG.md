@@ -1,5 +1,15 @@
 # 1.5.0-032
 
+- Made `@@location` the single source of truth for the pipeline region in
+  `03_run_daily_lineage_pipeline.sql`. `job_region` is now
+  `DECLARE job_region STRING DEFAULT @@location` instead of a duplicated literal,
+  so the region is set only at the `SET @@location` line. `@@location` sets the
+  job execution location; `job_region` carries the same value as a string for the
+  region-qualified INFORMATION_SCHEMA identifiers (`region-<job_region>`), which
+  cannot be parameterized. The `ASSERT @@location = job_region` equality check is
+  removed (the values can no longer drift); the `job_region` format ASSERT
+  remains. Verified in BigQuery that `DEFAULT @@location` is accepted.
+
 - Declared and created `render_dynamic_sql` with the same convention as the
   analyze / fingerprint UDFs. 03 now declares `udf_render_function_name` in the
   UDF config block beside `udf_function_name` / `udf_fingerprint_function_name`

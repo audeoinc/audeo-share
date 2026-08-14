@@ -4,7 +4,8 @@
 -- ============================================================================
 -- IMPORTANT:
 -- @@location must be set before statements that access BigQuery resources.
--- Keep this value equal to job_region below.
+-- This is the single source of truth for the pipeline region: job_region below
+-- is declared as DEFAULT @@location, so set the region only here.
 SET @@location = 'asia-northeast1';
 
 -- ============================================================================
@@ -37,9 +38,12 @@ BEGIN
 -- lineage_config table; this pipeline is configured entirely here.
 --
 -- Region for the whole pipeline (repository, target Views, source metadata, and
--- JOBS are all single-region). Must equal the `SET @@location` at the top of
--- this file.
-DECLARE job_region STRING DEFAULT 'asia-northeast1';
+-- JOBS are all single-region). Derived from `SET @@location` at the top of this
+-- file, which is the single source of truth: @@location sets the job execution
+-- location, and job_region carries the same value as a string for building the
+-- region-qualified INFORMATION_SCHEMA identifiers (`region-<job_region>`), which
+-- cannot be parameterized. Set the region only at the @@location line above.
+DECLARE job_region STRING DEFAULT @@location;
 DECLARE repository_project_id STRING DEFAULT 'project_id';
 DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
 DECLARE target_project_id STRING DEFAULT 'project_id';
@@ -302,8 +306,6 @@ SET render_call_sql = FORMAT(
 SET @@dataset_project_id = repository_project_id;
 SET @@dataset_id = repository_dataset;
 
-ASSERT @@location = job_region
-AS '@@location and job_region must be identical.';
 ASSERT REGEXP_CONTAINS(repository_project_id, r'^[A-Za-z0-9._:-]+$')
 AS 'Invalid repository_project_id.';
 ASSERT REGEXP_CONTAINS(repository_dataset, r'^[A-Za-z0-9_]+$')
