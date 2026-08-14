@@ -1,5 +1,13 @@
 # 1.5.0-032
 
+- Declared and created `render_dynamic_sql` with the same convention as the
+  analyze / fingerprint UDFs. 03 now declares `udf_render_function_name` in the
+  UDF config block beside `udf_function_name` / `udf_fingerprint_function_name`
+  (with a matching name ASSERT); 01 declares `bootstrap_udf_render_function_name`,
+  creates the function via `CREATE OR REPLACE FUNCTION \`%s.%s.%s\`` (name no
+  longer hardcoded), and reports it as `render_udf` in the setup summary; the
+  redeploy helper takes the name from a DECLARE too. No behavior change.
+
 - Relocated the persistent `render_dynamic_sql` to the UDF dataset (alongside
   `analyze_lineage_json`) and made its location DECLARE-configurable in 03.
   `01_setup_lineage_environment.sql` now creates it at

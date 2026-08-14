@@ -18,15 +18,18 @@ SET @@location = 'asia-northeast1';
 BEGIN
   DECLARE udf_project_id STRING DEFAULT 'project_id';
   DECLARE udf_dataset STRING DEFAULT 'dataset';
+  DECLARE udf_render_function_name STRING DEFAULT 'render_dynamic_sql';
 
   ASSERT REGEXP_CONTAINS(udf_project_id, r'^[A-Za-z0-9._:-]+$')
   AS 'Invalid udf_project_id.';
   ASSERT REGEXP_CONTAINS(udf_dataset, r'^[A-Za-z0-9_]+$')
   AS 'Invalid udf_dataset.';
+  ASSERT REGEXP_CONTAINS(udf_render_function_name, r'^[A-Za-z0-9_]+$')
+  AS 'Invalid udf_render_function_name.';
 
   EXECUTE IMMEDIATE FORMAT(
     '''
-    CREATE OR REPLACE FUNCTION `%s.%s.render_dynamic_sql`(
+    CREATE OR REPLACE FUNCTION `%s.%s.%s`(
       sql_template STRING,
       repository_project_id STRING,
       repository_dataset STRING,
@@ -86,11 +89,12 @@ BEGIN
     )
     ''',
     udf_project_id,
-    udf_dataset
+    udf_dataset,
+    udf_render_function_name
   );
 
   SELECT
-    FORMAT('%s.%s.render_dynamic_sql', udf_project_id, udf_dataset)
+    FORMAT('%s.%s.%s', udf_project_id, udf_dataset, udf_render_function_name)
       AS recreated_function,
     CURRENT_TIMESTAMP() AS recreated_at;
 END;

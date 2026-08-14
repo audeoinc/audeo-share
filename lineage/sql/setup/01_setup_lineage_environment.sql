@@ -32,6 +32,10 @@ DECLARE bootstrap_udf_function_name STRING DEFAULT 'analyze_lineage_json';
 -- rotating-destination JOBS (temp / ephemeral). Shares the same GCS bundle.
 DECLARE bootstrap_udf_fingerprint_function_name STRING
   DEFAULT 'fingerprint_lineage_sql';
+-- Companion scalar SQL UDF that expands the dynamic-SQL identifier placeholders.
+-- Used by 03_run_daily_lineage_pipeline.sql; created in the same UDF dataset.
+DECLARE bootstrap_udf_render_function_name STRING
+  DEFAULT 'render_dynamic_sql';
 DECLARE bootstrap_udf_library_uri STRING DEFAULT
   'gs://YOUR_BUCKET/YOUR_PATH/lineage_udf_bundle.js';
 
@@ -356,7 +360,7 @@ EXECUTE IMMEDIATE FORMAT(
 -- ============================================================================
 EXECUTE IMMEDIATE FORMAT(
   '''
-  CREATE OR REPLACE FUNCTION `%s.%s.render_dynamic_sql`(
+  CREATE OR REPLACE FUNCTION `%s.%s.%s`(
     sql_template STRING,
     repository_project_id STRING,
     repository_dataset STRING,
@@ -416,7 +420,8 @@ EXECUTE IMMEDIATE FORMAT(
   )
   ''',
   bootstrap_udf_project_id,
-  bootstrap_udf_dataset
+  bootstrap_udf_dataset,
+  bootstrap_udf_render_function_name
 );
 
 -- ============================================================================
@@ -597,6 +602,12 @@ SELECT
     bootstrap_udf_dataset,
     bootstrap_udf_fingerprint_function_name
   ) AS fingerprint_udf,
+  FORMAT(
+    '%s.%s.%s',
+    bootstrap_udf_project_id,
+    bootstrap_udf_dataset,
+    bootstrap_udf_render_function_name
+  ) AS render_udf,
   bootstrap_udf_library_uri,
   bootstrap_target_project_id,
   bootstrap_target_datasets,
