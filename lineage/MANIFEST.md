@@ -32,6 +32,7 @@ Generated: 2026-07-28
 - `javascript/README.md`
 - `javascript/VERSION`
 - `sql/bigquery/create_persistent_lineage_udf.sql`
+- `sql/bigquery/create_render_dynamic_sql_udf.sql`
 - `sql/bigquery/test_persistent_lineage_udf.sql`
 - `javascript/dist/lineage_udf_bundle.js`
 - `javascript/package.json`

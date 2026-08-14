@@ -340,6 +340,86 @@ EXECUTE IMMEDIATE FORMAT(
 );
 
 -- ============================================================================
+-- 4b. Persistent dynamic-SQL renderer
+--
+-- render_dynamic_sql expands the __TARGET_PROJECT__ / __JOB_REGION__ / __UDF__
+-- / __T_*__ identifier placeholders used by 03's dynamic SQL templates. It was
+-- formerly a script-level TEMP FUNCTION inside 03, but BigQuery prepends every
+-- script TEMP FUNCTION's DDL to the query text of every child job, so the
+-- console's "All results" list showed only "create temp function
+-- render_dynamic_sql(" for each statement. Deploying it as a persistent function
+-- here removes that prepend, so each statement (and the per-step progress
+-- markers) shows its own SQL. The function is created in the repository dataset;
+-- 03 references it by the fully-qualified name
+-- `<repository_project>.<repository_dataset>.render_dynamic_sql`, so keep the
+-- literal in 03 in step with bootstrap_repository_project_id /
+-- bootstrap_repository_dataset here.
+-- ============================================================================
+EXECUTE IMMEDIATE FORMAT(
+  '''
+  CREATE OR REPLACE FUNCTION `%s.render_dynamic_sql`(
+    sql_template STRING,
+    repository_project_id STRING,
+    repository_dataset STRING,
+    target_project_id STRING,
+    job_region STRING,
+    udf_project_id STRING,
+    udf_dataset STRING,
+    udf_function_name STRING,
+    repo_tables STRUCT<
+      def_registry STRING,
+      direct_dep STRING,
+      impact STRING,
+      diagnostic STRING,
+      job_registry STRING
+    >
+  )
+  RETURNS STRING
+  AS (
+    REPLACE(
+    REPLACE(
+    REPLACE(
+      REPLACE(
+        REPLACE(
+          REPLACE(
+            REPLACE(
+              REPLACE(
+                sql_template,
+                '__TARGET_PROJECT__',
+                target_project_id
+          ),
+          '__JOB_REGION__',
+          job_region
+        ),
+        '__UDF__',
+        udf_project_id || '.' || udf_dataset || '.' || udf_function_name
+      ),
+      '__T_DEF_REGISTRY__',
+      repository_project_id || '.' || repository_dataset || '.'
+        || repo_tables.def_registry
+    ),
+      '__T_DIRECT_DEP__',
+      repository_project_id || '.' || repository_dataset || '.'
+        || repo_tables.direct_dep
+    ),
+      '__T_IMPACT__',
+      repository_project_id || '.' || repository_dataset || '.'
+        || repo_tables.impact
+    ),
+      '__T_DIAGNOSTIC__',
+      repository_project_id || '.' || repository_dataset || '.'
+        || repo_tables.diagnostic
+    ),
+      '__T_JOB_REGISTRY__',
+      repository_project_id || '.' || repository_dataset || '.'
+        || repo_tables.job_registry
+    )
+  )
+  ''',
+  repository_dataset_full_name
+);
+
+-- ============================================================================
 -- 5. Persistent JavaScript UDF using the external GCS bundle
 --
 -- Dataset (SCHEMA) creation for the UDF dataset is intentionally disabled. The

@@ -10,71 +10,22 @@ SET @@location = 'asia-northeast1';
 -- ============================================================================
 -- Common dynamic SQL renderer
 -- ============================================================================
--- Only SQL identifiers are replaced here.
--- Runtime values must continue to be passed with EXECUTE IMMEDIATE ... USING.
-CREATE TEMP FUNCTION render_dynamic_sql(
-  sql_template STRING,
-  repository_project_id STRING,
-  repository_dataset STRING,
-  target_project_id STRING,
-  job_region STRING,
-  udf_project_id STRING,
-  udf_dataset STRING,
-  udf_function_name STRING,
-  repo_tables STRUCT<
-    def_registry STRING,
-    direct_dep STRING,
-    impact STRING,
-    diagnostic STRING,
-    job_registry STRING
-  >
-)
-RETURNS STRING
-AS (
-  -- Repository-table placeholders expand to the fully qualified
-  -- repository_project.repository_dataset.<physical_table_name>, mirroring the
-  -- __UDF__ placeholder. Physical table names are configured in the
-  -- declaration block so that environment-specific naming rules can be applied
-  -- without editing the body of the script.
-  REPLACE(
-  REPLACE(
-  REPLACE(
-    REPLACE(
-      REPLACE(
-        REPLACE(
-          REPLACE(
-            REPLACE(
-              sql_template,
-              '__TARGET_PROJECT__',
-              target_project_id
-        ),
-        '__JOB_REGION__',
-        job_region
-      ),
-      '__UDF__',
-      udf_project_id || '.' || udf_dataset || '.' || udf_function_name
-    ),
-    '__T_DEF_REGISTRY__',
-    repository_project_id || '.' || repository_dataset || '.'
-      || repo_tables.def_registry
-  ),
-    '__T_DIRECT_DEP__',
-    repository_project_id || '.' || repository_dataset || '.'
-      || repo_tables.direct_dep
-  ),
-    '__T_IMPACT__',
-    repository_project_id || '.' || repository_dataset || '.'
-      || repo_tables.impact
-  ),
-    '__T_DIAGNOSTIC__',
-    repository_project_id || '.' || repository_dataset || '.'
-      || repo_tables.diagnostic
-  ),
-    '__T_JOB_REGISTRY__',
-    repository_project_id || '.' || repository_dataset || '.'
-      || repo_tables.job_registry
-  )
-);
+-- render_dynamic_sql expands the __TARGET_PROJECT__ / __JOB_REGION__ / __UDF__
+-- / __T_*__ identifier placeholders below. It is a PERSISTENT function created
+-- by 01_setup_lineage_environment.sql (redeploy with
+-- sql/bigquery/create_render_dynamic_sql_udf.sql), NOT a script TEMP FUNCTION:
+-- BigQuery prepends every script TEMP FUNCTION's DDL to the query text of every
+-- child job, which made the console's "All results" list show only that
+-- prepended TEMP FUNCTION DDL header for every statement. As a
+-- persistent function nothing is prepended, so each statement (and the per-step
+-- progress markers below) shows its own SQL.
+--
+-- It is referenced by the fully-qualified literal
+-- `project_id.lineage_repository.render_dynamic_sql`. Keep that literal in step
+-- with repository_project_id / repository_dataset below and with the deployment
+-- location in 01 (bootstrap_repository_project_id / bootstrap_repository_dataset).
+-- Only SQL identifiers are replaced here; runtime values must continue to be
+-- passed with EXECUTE IMMEDIATE ... USING.
 
 BEGIN
 -- ============================================================================
@@ -393,7 +344,7 @@ AS 'configured_max_impact_rank must be between 1 and 1000.';
 -- Multi-valued execution accounts remain table-managed.
 -- Dynamic SQL execution convention:
 --   1. SET sql_template
---   2. SET rendered_sql = render_dynamic_sql(...)
+--   2. SET rendered_sql to the rendered result of the persistent renderer
 --   3. ASSERT that no placeholder remains
 --   4. EXECUTE IMMEDIATE rendered_sql [INTO ...] [USING ...]
 -- Dynamic SQL placeholders:
@@ -409,6 +360,8 @@ AS 'configured_max_impact_rank must be between 1 and 1000.';
 -- ============================================================================
 -- STEP 1: Synchronize View definitions
 -- ============================================================================
+-- Progress marker: labels this step in the console's "All results" list.
+SELECT '===== STEP 1: synchronize View definitions =====' AS processing_step;
 BEGIN
   DECLARE step_started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
 
@@ -669,7 +622,7 @@ BEGIN
         );
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -708,7 +661,7 @@ BEGIN
       );
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -741,6 +694,9 @@ END;
 -- Skipped entirely when process_generated_tables is FALSE (Views-only run).
 -- ============================================================================
 IF process_generated_tables THEN
+  -- Progress marker: labels this step in the console's "All results" list.
+  SELECT '===== STEP 2: synchronize Scheduled Query / DAG definitions ====='
+    AS processing_step;
 BEGIN
   DECLARE step_started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
   DECLARE lookback_days INT64;
@@ -786,7 +742,7 @@ BEGIN
       execution_source
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -808,7 +764,7 @@ BEGIN
     FROM `__T_JOB_REGISTRY__`
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -861,7 +817,7 @@ BEGIN
       AND statement_type IN UNNEST(@statement_types)
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -1060,7 +1016,7 @@ BEGIN
         );
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -1167,7 +1123,7 @@ BEGIN
     ) = 1
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -1277,7 +1233,7 @@ BEGIN
         );
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -1330,7 +1286,7 @@ BEGIN
       );
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -1374,7 +1330,7 @@ BEGIN
       );
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -1473,7 +1429,7 @@ BEGIN
     );
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -1505,7 +1461,7 @@ BEGIN
     );
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -1567,7 +1523,7 @@ BEGIN
   -- with the dataset name baked into the executed text (via FORMAT, not a bound
   -- variable), so each iteration surfaces which dataset STEP 3 is processing.
   EXECUTE IMMEDIATE FORMAT(
-    "SELECT '===== STEP 3 analysis | dataset: %s =====' AS processing_target",
+    "SELECT '===== STEP 3 | dataset: %s =====' AS processing_step",
     ds_row.ds
   );
 
@@ -1636,7 +1592,7 @@ BEGIN
       )
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -1680,7 +1636,7 @@ BEGIN
       AND object_type = 'VIEW'
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -1711,6 +1667,12 @@ BEGIN
   -- source_discovery_json cell. The loop still validates the per-object status
   -- and RAISEs into this object's EXCEPTION handler exactly as before.
   -- --------------------------------------------------------------------------
+  -- Progress marker: discovery sub-step for the current dataset.
+  EXECUTE IMMEDIATE FORMAT(
+    "SELECT '----- STEP 3.discovery | dataset: %s -----' AS processing_step",
+    ds_row.ds
+  );
+
   -- Build the discovery result table in a single UDF query over the current
   -- dataset's changed set. Per-dataset scoping (the enclosing loop) bounds the
   -- UDF invocation count; source_discovery_only never throws, so a failing
@@ -1735,7 +1697,7 @@ BEGIN
       changed_definitions_to_analyze
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -2110,6 +2072,12 @@ BEGIN
     ) AS t;
 
     -- ------------------------------------------------------------------------
+    -- Progress marker: analysis sub-step for the current dataset.
+    EXECUTE IMMEDIATE FORMAT(
+      "SELECT '----- STEP 3.analysis | dataset: %s -----' AS processing_step",
+      ds_row.ds
+    );
+
     -- 3. Run the persistent lineage UDF over every analyzable object in the
     -- current dataset in a single query. Per-dataset scoping (the enclosing
     -- loop) bounds how many objects share one per-slot UDF context, which keeps
@@ -2165,7 +2133,7 @@ BEGIN
       ) AS x
     """;
 
-    SET rendered_sql = render_dynamic_sql(
+    SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
       sql_template,
       repository_project_id,
       repository_dataset,
@@ -2692,7 +2660,7 @@ BEGIN
           AND dependency.generation_type = obj.generation_type
       )
     """;
-    SET rendered_sql = render_dynamic_sql(
+    SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
       sql_template,
       repository_project_id,
       repository_dataset,
@@ -2720,7 +2688,7 @@ BEGIN
           AND diagnostic.object_type = obj.object_type
       )
     """;
-    SET rendered_sql = render_dynamic_sql(
+    SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
       sql_template,
       repository_project_id,
       repository_dataset,
@@ -2754,7 +2722,7 @@ BEGIN
             AND dependency.generation_type = obj.generation_type
         )
       """;
-      SET rendered_sql = render_dynamic_sql(
+      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
         sql_template,
         repository_project_id, repository_dataset, target_project_id,
         job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
@@ -2779,7 +2747,7 @@ BEGIN
           resolution_reason, edge_key, analyzed_at
         FROM batch_staged_direct_dependency
       """;
-      SET rendered_sql = render_dynamic_sql(
+      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
         sql_template,
         repository_project_id, repository_dataset, target_project_id,
         job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
@@ -2802,7 +2770,7 @@ BEGIN
             AND diagnostic.object_type = obj.object_type
         )
       """;
-      SET rendered_sql = render_dynamic_sql(
+      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
         sql_template,
         repository_project_id, repository_dataset, target_project_id,
         job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
@@ -2835,7 +2803,7 @@ BEGIN
           expression, message, diagnostic_json, analyzed_at
         FROM batch_preanalysis_diagnostic
       """;
-      SET rendered_sql = render_dynamic_sql(
+      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
         sql_template,
         repository_project_id, repository_dataset, target_project_id,
         job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
@@ -2861,7 +2829,7 @@ BEGIN
           AND reg.generation_type = obj.generation_type
           AND reg.definition_hash = obj.definition_hash
       """;
-      SET rendered_sql = render_dynamic_sql(
+      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
         sql_template,
         repository_project_id, repository_dataset, target_project_id,
         job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
@@ -2898,7 +2866,7 @@ BEGIN
           AND reg.generation_type = obj.generation_type
           AND reg.definition_hash = obj.definition_hash
       """;
-      SET rendered_sql = render_dynamic_sql(
+      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
         sql_template,
         repository_project_id, repository_dataset, target_project_id,
         job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
@@ -2926,7 +2894,7 @@ BEGIN
             AND dependency.generation_type = obj.generation_type
         )
       """;
-      SET rendered_sql = render_dynamic_sql(
+      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
         sql_template,
         repository_project_id, repository_dataset, target_project_id,
         job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
@@ -2939,7 +2907,7 @@ BEGIN
         INSERT INTO `__T_DIRECT_DEP__`
         SELECT * FROM batch_previous_direct_dependency
       """;
-      SET rendered_sql = render_dynamic_sql(
+      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
         sql_template,
         repository_project_id, repository_dataset, target_project_id,
         job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
@@ -2959,7 +2927,7 @@ BEGIN
             AND diagnostic.object_type = obj.object_type
         )
       """;
-      SET rendered_sql = render_dynamic_sql(
+      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
         sql_template,
         repository_project_id, repository_dataset, target_project_id,
         job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
@@ -2972,7 +2940,7 @@ BEGIN
         INSERT INTO `__T_DIAGNOSTIC__`
         SELECT * FROM batch_previous_lineage_diagnostic
       """;
-      SET rendered_sql = render_dynamic_sql(
+      SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
         sql_template,
         repository_project_id, repository_dataset, target_project_id,
         job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
@@ -3150,7 +3118,7 @@ BEGIN
       ) AS error_diagnostic_count
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -3175,6 +3143,8 @@ END;
 -- ============================================================================
 -- STEP 4: Rebuild ranked impact paths
 -- ============================================================================
+-- Progress marker: labels this step in the console's "All results" list.
+SELECT '===== STEP 4: rebuild ranked impact paths =====' AS processing_step;
 BEGIN
   DECLARE snapshot_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
   DECLARE max_rank INT64 DEFAULT configured_max_impact_rank;
@@ -3319,7 +3289,7 @@ BEGIN
   FROM impact_tree
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -3350,7 +3320,7 @@ BEGIN
       ) AS impact_row_count
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -3401,7 +3371,7 @@ SET sql_template = """
     ) AS error_diagnostic_count
 """;
 
-SET rendered_sql = render_dynamic_sql(
+SET rendered_sql = `project_id.lineage_repository.render_dynamic_sql`(
   sql_template,
   repository_project_id,
   repository_dataset,

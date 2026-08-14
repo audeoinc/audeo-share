@@ -76,8 +76,12 @@ npm test                        # build + verify:bundle + test:release を一括
     `DECLARE x ARRAY<STRING> DEFAULT []` は可。
   - `OFFSET` / `ORDINAL` は予約キーワード、`SAFE_OFFSET` / `SAFE_ORDINAL` は識別子。
   - 名前フィルタの正規表現は大文字小文字を無視：`REGEXP_CONTAINS(LOWER(name), LOWER(pattern))`。
-- **03 パイプラインの構造**：`render_dynamic_sql` TEMP FUNCTION（8 プレースホルダ /
-  9 パラメータ）でテンプレート置換 → `EXECUTE IMMEDIATE`。STEP1=VIEW 収集、
+- **03 パイプラインの構造**：`render_dynamic_sql`（8 プレースホルダ / 9 パラメータ）で
+  テンプレート置換 → `EXECUTE IMMEDIATE`。この関数は **01 setup が作る永続関数**で、03 からは
+  `` `project_id.lineage_repository.render_dynamic_sql` `` の修飾名で呼ぶ（旧: スクリプト内
+  TEMP FUNCTION）。TEMP FUNCTION は BigQuery が全子ジョブの SQL 冒頭に DDL を前置し、コンソール
+  「All results」が全部同じ表示になるため永続化した。本体変更時は
+  `sql/bigquery/create_render_dynamic_sql_udf.sql` で再配備。STEP1=VIEW 収集、
   STEP2=JOBS 収集、STEP3/4=解析。region は単一の `job_region`（`@@location`）。
   JOBS の重複除去はフィンガープリント方式（一時/ローテーション/期限付き宛先は
   代表 1 件に集約、永続宛先は宛先ごとに保持）。ephemeral 判定＝宛先が実在し、かつ

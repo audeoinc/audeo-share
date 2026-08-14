@@ -1,5 +1,25 @@
 # 1.5.0-032
 
+- Moved `render_dynamic_sql` from a script TEMP FUNCTION in
+  `03_run_daily_lineage_pipeline.sql` to a **persistent SQL function** created by
+  `01_setup_lineage_environment.sql` in the repository dataset, and made the
+  per-step progress markers effective. BigQuery prepends every script TEMP
+  FUNCTION's DDL to the query text of every child job, so the console's "All
+  results" list showed only that prepended `create temp function
+  render_dynamic_sql(` header for every statement — confirmed empirically: even a
+  dynamic `SELECT` marker was masked by it. `render_dynamic_sql` is now a
+  persistent function; 03 removes the `CREATE TEMP FUNCTION` and calls it by the
+  qualified literal `` `project_id.lineage_repository.render_dynamic_sql` `` at all
+  32 call sites, so nothing is prepended and each statement shows its own SQL.
+  Added `sql/bigquery/create_render_dynamic_sql_udf.sql` to redeploy the function
+  in place. Added step-level progress markers (STEP 1/2/4 banners and STEP 3
+  per-dataset / discovery / analysis markers) that now surface in "All results".
+  Migration: existing environments must recreate the function (re-run 01 setup or
+  the new redeploy helper) before running this 03. Keep the qualified literal in 03
+  in step with the repository location (bootstrap_repository_project_id /
+  bootstrap_repository_dataset in 01). SQL-only change; the engine bundle is
+  unaffected. Not yet validated against BigQuery.
+
 - Added a per-iteration progress marker to `03_run_daily_lineage_pipeline.sql`
   STEP 3. Because `render_dynamic_sql` is a script TEMP FUNCTION, BigQuery
   prepends its `CREATE TEMP FUNCTION` DDL to the query text of every child job
