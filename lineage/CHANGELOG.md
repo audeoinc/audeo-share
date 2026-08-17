@@ -1,16 +1,21 @@
 # 1.5.0-032
 
 - Added `sql/maintenance/08_view_last_access.sql`, a standalone read-only report
-  of each tracked VIEW's last access time. It aggregates
-  `INFORMATION_SCHEMA.JOBS_BY_PROJECT.referenced_tables` over a lookback window
-  and LEFT JOINs the definition registry, so views never queried in the window
-  show `last_accessed_at = NULL` (unused-view candidates) alongside the
-  pipeline's `last_seen_at` / `last_analyzed_at`. Region derives from
-  `@@location`; jobs project, target project, registry name, lookback, and
-  dataset include/exclude patterns are DECLAREs. Documents its limits (JOBS
-  ~180-day retention, per-project job scope, and that view-level access requires
-  the view to appear in `referenced_tables` — with a verification query).
-  Read-only; not part of the daily pipeline. Not yet validated against BigQuery.
+  of each tracked VIEW's last access time, built on BigQuery audit logs sinked to
+  BigQuery (new format: `protopayload_auditlog.metadataJson`,
+  BigQueryAuditMetadata). It reads
+  `$.jobChange.job.jobStats.queryStats.referencedViews`, which identifies the
+  VIEW itself (separate from `referencedTables`) — unlike
+  `INFORMATION_SCHEMA.JOBS.referenced_tables`, which does not reliably distinguish
+  a view from its base tables. Accesses are LEFT JOINed to the definition registry
+  so views never queried in the window show `last_accessed_at = NULL`
+  (unused-view candidates) alongside the pipeline's `last_seen_at` /
+  `last_analyzed_at`. Audit table location, target project, registry name,
+  lookback, and dataset include/exclude patterns are DECLAREs; `@@location` must
+  match both the audit table and the repository (single-region). Documents the
+  legacy-format path, the same-region join requirement (with a pure-audit fallback
+  query), retention, and the cache-hit caveat. Read-only; not part of the daily
+  pipeline. Not yet validated against BigQuery.
 
 - Made `@@location` the single source of truth for the pipeline region in
   `03_run_daily_lineage_pipeline.sql`. `job_region` is now

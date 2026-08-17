@@ -1,77 +1,80 @@
 -- ============================================================================
 -- 08_view_last_access.sql
--- BigQuery Physical Lineage Repository - View last-access report (standalone)
+-- BigQuery Physical Lineage Repository - View last-access report (audit logs)
 -- ============================================================================
--- Reports the last time each tracked VIEW was accessed by a query, derived from
--- INFORMATION_SCHEMA.JOBS_BY_PROJECT.referenced_tables, joined against the
--- lineage definition registry so that:
---   - views never queried in the window show last_accessed_at = NULL
---     (unused-view candidates), and
---   - access metrics sit next to the pipeline's own timestamps
---     (last_seen_at = last pipeline observation, last_analyzed_at = last
---     lineage analysis).
+-- Reports the last time each tracked VIEW was accessed by a query, from BigQuery
+-- audit logs sinked into BigQuery (the "new" format: BigQueryAuditMetadata in
+-- protopayload_auditlog.metadataJson). Audit logs are the authoritative source
+-- for view access because they expose a dedicated `referencedViews` array that
+-- identifies the VIEW itself, separate from `referencedTables` -- unlike
+-- INFORMATION_SCHEMA.JOBS.referenced_tables, which does not reliably distinguish
+-- a view from its underlying base tables.
 --
--- This is a read-only report. It does NOT modify the repository and is not part
--- of the daily pipeline. Run it on demand.
+-- The audit accesses are LEFT JOINed to the lineage definition registry, so
+-- views never queried in the window show last_accessed_at = NULL
+-- (unused-view candidates) alongside the pipeline's own timestamps
+-- (last_seen_at = last pipeline observation, last_analyzed_at = last analysis).
 --
--- CAVEATS (read before trusting the numbers):
---   1. JOBS_BY_PROJECT retains roughly the last 180 days of jobs. Accesses older
---      than lookback_days / the retention window are not visible here. For
---      longer history, export Cloud Audit Logs (BigQueryAuditMetadata data-access
---      events) and aggregate those instead.
---   2. JOBS_BY_PROJECT only contains jobs that RAN IN jobs_project_id. If the
---      views are queried from jobs billed to other projects, set jobs_project_id
---      accordingly or union several projects' JOBS_BY_PROJECT (or use
---      JOBS_BY_ORGANIZATION, which needs organization-level permission).
---   3. referenced_tables including the VIEW itself is NOT guaranteed. The docs
---      define it as the "tables referenced by the query" and do not promise views;
---      in practice a view access often lists both the view AND its underlying base
---      tables, but this is case/version dependent. Verify it holds in your
---      environment before trusting the NULLs as "unused" (see the verification
---      query at the bottom). If only base tables appear, view-level access must
---      come from Cloud Audit Logs (BigQueryAuditMetadata data-access events).
---   4. referenced_tables is NOT populated for cache-hit query jobs, so accesses
---      served from the results cache are invisible here and can make a used view
---      look unused. Audit logs do capture cache hits.
---   5. @@location must equal the region whose JOBS_BY_PROJECT you read.
+-- Read-only report; not part of the daily pipeline. Run it on demand.
+--
+-- WHERE THE VIEW IS IDENTIFIED:
+--   protopayload_auditlog.metadataJson (JSON) ->
+--     $.jobChange.job.jobStats.queryStats.referencedViews
+--   Each element is a resource name: projects/P/datasets/D/tables/VIEW
+--   (views use the /tables/ path but are listed under referencedViews).
+--
+-- CAVEATS:
+--   1. New format assumed: protopayload_auditlog.metadataJson
+--      (BigQueryAuditMetadata). If your sink is the legacy format, read
+--      protopayload_auditlog.servicedata_v1_bigquery.jobCompletedEvent.job
+--      .jobStatistics.referencedViews instead. Check which by whether
+--      metadataJson IS NOT NULL.
+--   2. Use the *_cloudaudit_googleapis_com_data_access sink table (data access),
+--      not _activity. Set audit_project/dataset/table below.
+--   3. @@location must match the location of BOTH the audit table and the lineage
+--      repository (the query joins them). This system is single-region, so they
+--      are expected to share @@location. If they are in different regions, run
+--      the pure-audit variant at the bottom (no registry join) instead.
+--   4. The window is bounded by how much history the sink table retains
+--      (independent of the JOBS ~180-day limit; configure lookback_days to it).
+--   5. Whether cache-hit queries populate referencedViews should be verified in
+--      your environment; if they do not, a cached-only access can still look like
+--      no access.
 --
 -- Not yet validated against BigQuery.
 -- ============================================================================
 SET @@location = 'asia-northeast1';
 
 BEGIN
-  -- Region is the single source of truth: derived from @@location above.
-  DECLARE job_region STRING DEFAULT @@location;
+  -- Audit log sink location (the *_data_access table).
+  DECLARE audit_project_id STRING DEFAULT 'project_id';
+  DECLARE audit_dataset STRING DEFAULT 'audit_logs';
+  DECLARE audit_table STRING DEFAULT 'cloudaudit_googleapis_com_data_access';
 
-  -- Project whose job history to scan (where the querying jobs ran / were billed).
-  DECLARE jobs_project_id STRING DEFAULT 'project_id';
-  -- Project the views live in (filters referenced_tables to these objects).
+  -- Project the views live in (filters referencedViews to these objects).
   DECLARE target_project_id STRING DEFAULT 'project_id';
 
   -- Lineage repository location (holds the definition registry).
   DECLARE repository_project_id STRING DEFAULT 'project_id';
   DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
-  -- Physical registry table name: keep prefix/suffix in step with 01 setup
-  -- (bootstrap_table_name_prefix / suffix). Default is m_lineage_definition_registry.
+  -- Physical registry table name: keep prefix/suffix in step with 01 setup.
   DECLARE table_name_prefix STRING DEFAULT '';
   DECLARE table_name_suffix STRING DEFAULT '';
 
-  -- How far back to scan job history (days). Bounded by JOBS retention (~180d).
+  -- How far back to scan (days). Bounded by the sink table's retention.
   DECLARE lookback_days INT64 DEFAULT 180;
 
   -- Optional dataset-name regex filters on the reported views (empty = all).
-  -- Case-insensitive REGEXP_CONTAINS, same convention as the pipeline.
   DECLARE include_dataset_patterns ARRAY<STRING> DEFAULT [];
   DECLARE exclude_dataset_patterns ARRAY<STRING> DEFAULT [];
 
+  DECLARE audit_fqn STRING;
   DECLARE registry_fqn STRING;
   DECLARE rendered_sql STRING;
 
-  ASSERT REGEXP_CONTAINS(job_region, r'^[A-Za-z0-9-]+$')
-  AS 'Invalid job_region.';
-  ASSERT lookback_days BETWEEN 1 AND 180
-  AS 'lookback_days must be between 1 and 180 (JOBS_BY_PROJECT retention).';
+  ASSERT lookback_days >= 1 AS 'lookback_days must be >= 1.';
 
+  SET audit_fqn = FORMAT('%s.%s.%s', audit_project_id, audit_dataset, audit_table);
   SET registry_fqn = FORMAT(
     '%s.%s.%s',
     repository_project_id,
@@ -81,33 +84,33 @@ BEGIN
 
   SET rendered_sql = FORMAT(
     """
-    WITH accesses AS (
+    WITH view_accesses AS (
       SELECT
-        ref.project_id AS object_project,
-        ref.dataset_id AS object_dataset,
-        ref.table_id   AS object_name,
-        j.creation_time,
-        j.user_email
-      FROM `%s.region-%s`.INFORMATION_SCHEMA.JOBS_BY_PROJECT AS j,
-        UNNEST(j.referenced_tables) AS ref
-      WHERE j.job_type = 'QUERY'
-        AND j.state = 'DONE'
-        AND j.error_result IS NULL
-        AND j.creation_time >=
-          TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_days DAY)
-        AND ref.project_id = @target_project_id
+        SPLIT(view_resource, '/')[SAFE_OFFSET(1)] AS object_project,
+        SPLIT(view_resource, '/')[SAFE_OFFSET(3)] AS object_dataset,
+        SPLIT(view_resource, '/')[SAFE_OFFSET(5)] AS object_name,
+        a.timestamp AS accessed_at,
+        a.protopayload_auditlog.authenticationInfo.principalEmail AS principal_email
+      FROM `%s` AS a,
+        UNNEST(JSON_VALUE_ARRAY(
+          a.protopayload_auditlog.metadataJson,
+          '$.jobChange.job.jobStats.queryStats.referencedViews'
+        )) AS view_resource
+      WHERE a.timestamp >=
+        TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_days DAY)
     ),
-    per_object AS (
+    per_view AS (
       SELECT
         object_project,
         object_dataset,
         object_name,
-        MAX(creation_time) AS last_accessed_at,
-        COUNT(*) AS access_job_count,
-        COUNT(DISTINCT user_email) AS distinct_users,
-        ARRAY_AGG(user_email ORDER BY creation_time DESC LIMIT 1)[SAFE_OFFSET(0)]
+        MAX(accessed_at) AS last_accessed_at,
+        COUNT(*) AS access_event_count,
+        COUNT(DISTINCT principal_email) AS distinct_users,
+        ARRAY_AGG(principal_email ORDER BY accessed_at DESC LIMIT 1)[SAFE_OFFSET(0)]
           AS last_accessed_by
-      FROM accesses
+      FROM view_accesses
+      WHERE object_project = @target_project_id
       GROUP BY object_project, object_dataset, object_name
     )
     SELECT
@@ -115,20 +118,20 @@ BEGIN
       reg.object_dataset,
       reg.object_name,
       reg.object_type,
-      po.last_accessed_at,
-      TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), po.last_accessed_at, DAY)
+      pv.last_accessed_at,
+      TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), pv.last_accessed_at, DAY)
         AS days_since_last_access,
-      COALESCE(po.access_job_count, 0) AS access_job_count,
-      COALESCE(po.distinct_users, 0) AS distinct_users,
-      po.last_accessed_by,
+      COALESCE(pv.access_event_count, 0) AS access_event_count,
+      COALESCE(pv.distinct_users, 0) AS distinct_users,
+      pv.last_accessed_by,
       reg.is_active,
       reg.last_seen_at,
       reg.last_analyzed_at
     FROM `%s` AS reg
-    LEFT JOIN per_object AS po
-      ON  LOWER(po.object_project) = LOWER(reg.object_project)
-      AND LOWER(po.object_dataset) = LOWER(reg.object_dataset)
-      AND LOWER(po.object_name)    = LOWER(reg.object_name)
+    LEFT JOIN per_view AS pv
+      ON  LOWER(pv.object_project) = LOWER(reg.object_project)
+      AND LOWER(pv.object_dataset) = LOWER(reg.object_dataset)
+      AND LOWER(pv.object_name)    = LOWER(reg.object_name)
     WHERE reg.object_type = 'VIEW'
       AND reg.is_active = TRUE
       AND (
@@ -142,10 +145,9 @@ BEGIN
         SELECT 1 FROM UNNEST(@exclude_dataset_patterns) AS p
         WHERE REGEXP_CONTAINS(LOWER(reg.object_dataset), LOWER(p))
       )
-    ORDER BY po.last_accessed_at DESC NULLS LAST
+    ORDER BY pv.last_accessed_at DESC NULLS LAST
     """,
-    jobs_project_id,
-    job_region,
+    audit_fqn,
     registry_fqn
   );
 
@@ -158,15 +160,26 @@ BEGIN
 END;
 
 -- ============================================================================
--- Verification helper (caveat #3): does referenced_tables list VIEWS at all?
--- Run this once for a view you KNOW was queried recently. A non-zero count means
--- view-level access is captured and the NULLs above are trustworthy as "unused".
+-- Pure-audit variant (caveat #3): no registry join, so the audit table and the
+-- lineage repository may live in different regions. Lists only views that WERE
+-- accessed in the window (cannot surface never-accessed views). Replace the
+-- audit table name and adjust @@location to the audit table's region.
 -- ============================================================================
 -- SET @@location = 'asia-northeast1';
--- SELECT COUNT(*) AS view_reference_hits
--- FROM `project_id.region-asia-northeast1`.INFORMATION_SCHEMA.JOBS_BY_PROJECT AS j,
---   UNNEST(j.referenced_tables) AS ref
--- WHERE j.creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
---   AND ref.project_id = 'project_id'
---   AND ref.dataset_id = 'your_dataset'
---   AND ref.table_id   = 'your_recently_queried_view';
+-- SELECT
+--   SPLIT(v, '/')[SAFE_OFFSET(1)] AS object_project,
+--   SPLIT(v, '/')[SAFE_OFFSET(3)] AS object_dataset,
+--   SPLIT(v, '/')[SAFE_OFFSET(5)] AS object_name,
+--   MAX(timestamp) AS last_accessed_at,
+--   COUNT(*)       AS access_event_count,
+--   COUNT(DISTINCT protopayload_auditlog.authenticationInfo.principalEmail)
+--     AS distinct_users
+-- FROM `project_id.audit_logs.cloudaudit_googleapis_com_data_access`,
+--   UNNEST(JSON_VALUE_ARRAY(
+--     protopayload_auditlog.metadataJson,
+--     '$.jobChange.job.jobStats.queryStats.referencedViews'
+--   )) AS v
+-- WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 180 DAY)
+--   AND SPLIT(v, '/')[SAFE_OFFSET(1)] = 'project_id'
+-- GROUP BY object_project, object_dataset, object_name
+-- ORDER BY last_accessed_at DESC;
