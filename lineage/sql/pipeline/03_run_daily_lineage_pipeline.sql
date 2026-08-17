@@ -245,6 +245,14 @@ DECLARE rendered_sql STRING;
 -- project/dataset, so the renderer location stays DECLARE-configurable.
 DECLARE render_call_sql STRING;
 
+-- Gate flags coordinating STEP 3 (analysis) and STEP 4 (impact rebuild). Set in
+-- STEP 3: whether the direct-dependency orphan cleanup removed any rows this run
+-- (i.e. an object was deactivated), and whether any analysis actually ran. STEP 4
+-- rebuilds impact only when one of these is true, so an unchanged daily run skips
+-- the rebuild.
+DECLARE orphan_direct_dep_deleted INT64 DEFAULT 0;
+DECLARE has_analysis_work BOOL DEFAULT FALSE;
+
 -- Work variables for building the cross-dataset source-metadata union SQL.
 DECLARE columns_union_sql STRING;
 DECLARE field_paths_union_sql STRING;
@@ -541,37 +549,11 @@ BEGIN
     tables_union_sql
   );
 
-  -- COLUMNS across every source dataset.
-  SET columns_union_sql = (
-    SELECT STRING_AGG(
-      FORMAT(
-        'SELECT * FROM `%s.%s.INFORMATION_SCHEMA.COLUMNS`',
-        project_id, dataset_id
-      ),
-      ' UNION ALL '
-    )
-    FROM (SELECT DISTINCT project_id, dataset_id FROM source_datasets)
-  );
-  EXECUTE IMMEDIATE FORMAT(
-    'CREATE OR REPLACE TEMP TABLE current_target_columns AS %s',
-    columns_union_sql
-  );
-
-  -- COLUMN_FIELD_PATHS across every source dataset.
-  SET field_paths_union_sql = (
-    SELECT STRING_AGG(
-      FORMAT(
-        'SELECT * FROM `%s.%s.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS`',
-        project_id, dataset_id
-      ),
-      ' UNION ALL '
-    )
-    FROM (SELECT DISTINCT project_id, dataset_id FROM source_datasets)
-  );
-  EXECUTE IMMEDIATE FORMAT(
-    'CREATE OR REPLACE TEMP TABLE current_target_column_field_paths AS %s',
-    field_paths_union_sql
-  );
+  -- current_target_columns and current_target_column_field_paths (the COLUMNS and
+  -- COLUMN_FIELD_PATHS scans over every source dataset) are NOT loaded here. They
+  -- are the heaviest scan in the run and are only consumed by STEP 3 analysis, so
+  -- STEP 3 loads them behind its has-changes gate -- an unchanged daily run never
+  -- pays for them. current_target_tables above is kept because STEP 2 uses it.
 
   SET sql_template = """
       MERGE
@@ -1341,6 +1323,9 @@ BEGIN
   DECLARE strict_mode BOOL DEFAULT parser_strict_mode;
   DECLARE analyzed_object_count INT64 DEFAULT 0;
   DECLARE failed_object_count INT64 DEFAULT 0;
+  -- Datasets that have at least one analyzable changed object this run. Empty on
+  -- an unchanged run, which skips the metadata scan and the whole analysis loop.
+  DECLARE changed_datasets ARRAY<STRING>;
 
   -- --------------------------------------------------------------------------
   -- Remove repository rows whose target definition is no longer active.
@@ -1367,6 +1352,9 @@ BEGIN
   AS 'Unresolved placeholder in orphan direct-dependency DELETE SQL.';
 
   EXECUTE IMMEDIATE rendered_sql;
+  -- Rows removed here mean a target object was deactivated (dropped/removed), so
+  -- the impact graph changed even if nothing was re-analyzed -> STEP 4 must run.
+  SET orphan_direct_dep_deleted = @@row_count;
 
   SET sql_template = """
     DELETE FROM
@@ -1391,41 +1379,109 @@ BEGIN
   EXECUTE IMMEDIATE rendered_sql;
 
   -- --------------------------------------------------------------------------
-  -- Per-dataset analysis loop.
+  -- Which datasets have analyzable changed objects this run. The filter mirrors
+  -- the per-dataset materialization filter below (is_active / is_changed / type /
+  -- name + dataset include-exclude), so a dataset appears iff the loop would
+  -- produce at least one row for it. Empty => nothing changed => everything
+  -- expensive below (the metadata scan and the analysis loop) is skipped.
+  -- --------------------------------------------------------------------------
+  SET sql_template = """
+    SELECT ARRAY_AGG(DISTINCT object_dataset)
+    FROM
+      `__T_DEF_REGISTRY__`
+    WHERE is_active = TRUE
+      AND is_changed = TRUE
+      AND definition_text IS NOT NULL
+      AND object_type IN ('VIEW', 'TABLE')
+      AND (@include_tables OR object_type = 'VIEW')
+      AND (
+        ARRAY_LENGTH(@include_patterns) = 0
+        OR EXISTS (
+          SELECT 1 FROM UNNEST(@include_patterns) AS pattern
+          WHERE REGEXP_CONTAINS(LOWER(object_name), LOWER(pattern))
+        )
+      )
+      AND (
+        ARRAY_LENGTH(@include_dataset_patterns) = 0
+        OR EXISTS (
+          SELECT 1 FROM UNNEST(@include_dataset_patterns) AS pattern
+          WHERE REGEXP_CONTAINS(LOWER(object_dataset), LOWER(pattern))
+        )
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM UNNEST(@exclude_patterns) AS pattern
+        WHERE REGEXP_CONTAINS(LOWER(object_name), LOWER(pattern))
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM UNNEST(@exclude_dataset_patterns) AS pattern
+        WHERE REGEXP_CONTAINS(LOWER(object_dataset), LOWER(pattern))
+      )
+  """;
+
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
+
+  ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
+  AS 'Unresolved placeholder in changed-datasets probe SQL.';
+
+  EXECUTE IMMEDIATE rendered_sql
+  INTO changed_datasets
+  USING
+    process_generated_tables AS include_tables,
+    analysis_include_object_patterns AS include_patterns,
+    analysis_exclude_object_patterns AS exclude_patterns,
+    analysis_include_dataset_patterns AS include_dataset_patterns,
+    analysis_exclude_dataset_patterns AS exclude_dataset_patterns;
+
+  SET changed_datasets = COALESCE(changed_datasets, CAST([] AS ARRAY<STRING>));
+  SET has_analysis_work = ARRAY_LENGTH(changed_datasets) > 0;
+
+  IF has_analysis_work THEN
+
+  -- ------------------------------------------------------------------------
+  -- Source-column metadata, loaded only when there is analysis work. The COLUMNS
+  -- and COLUMN_FIELD_PATHS scans over every source dataset are the heaviest scan
+  -- in the run; gating them here is the main saving when nothing changed. Loaded
+  -- for ALL source datasets (not just the changed ones) so cross-dataset source
+  -- references still resolve while each pass analyzes a single dataset.
+  -- ------------------------------------------------------------------------
+  SET columns_union_sql = (
+    SELECT STRING_AGG(
+      FORMAT('SELECT * FROM `%s.%s.INFORMATION_SCHEMA.COLUMNS`', project_id, dataset_id),
+      ' UNION ALL '
+    )
+    FROM (SELECT DISTINCT project_id, dataset_id FROM source_datasets)
+  );
+  EXECUTE IMMEDIATE FORMAT(
+    'CREATE OR REPLACE TEMP TABLE current_target_columns AS %s',
+    columns_union_sql
+  );
+
+  SET field_paths_union_sql = (
+    SELECT STRING_AGG(
+      FORMAT('SELECT * FROM `%s.%s.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS`', project_id, dataset_id),
+      ' UNION ALL '
+    )
+    FROM (SELECT DISTINCT project_id, dataset_id FROM source_datasets)
+  );
+  EXECUTE IMMEDIATE FORMAT(
+    'CREATE OR REPLACE TEMP TABLE current_target_column_field_paths AS %s',
+    field_paths_union_sql
+  );
+
+  -- --------------------------------------------------------------------------
+  -- Per-dataset analysis loop, over only the datasets with changed objects.
   --
   -- The JavaScript lineage UDF is a per-row scalar function; running it across
   -- every changed object in the region in a single pass accumulates V8 heap in
-  -- the per-slot UDF context and hits "Resource exceeded during query execution:
-  -- UDF out of memory" at large target counts. Iterating one target dataset at a
-  -- time bounds how many objects a single UDF pass processes, which keeps the UDF
-  -- under the per-slot memory ceiling (the empirically safe unit of work).
-  --
-  -- Loop only over datasets that pass the configured analysis include/exclude
-  -- dataset filters; inside the loop the analysis set is scoped to the single
-  -- current dataset via an anchored (^ds$) include pattern. The orphan cleanup
-  -- above and the impact rebuild (STEP 4) stay outside the loop; the global
-  -- metadata snapshot (current_target_columns, loaded once in STEP 1) covers all
-  -- target datasets, so cross-dataset source references still resolve while each
-  -- pass analyzes a single dataset. Loop body indentation is kept flat to bound
-  -- the diff; every statement through the inner analysis block runs per dataset.
+  -- the per-slot UDF context and hits "UDF out of memory" at large target counts.
+  -- Iterating one dataset at a time bounds how many objects a single UDF pass
+  -- processes. Inside the loop the analysis set is scoped to the single current
+  -- dataset via an anchored (^ds$) include pattern. Loop body indentation is kept
+  -- flat to bound the diff; every statement through the inner analysis block runs
+  -- per dataset.
   -- --------------------------------------------------------------------------
   FOR ds_row IN (
-    SELECT ds
-    FROM UNNEST(target_datasets) AS ds
-    WHERE (
-      ARRAY_LENGTH(analysis_include_dataset_patterns) = 0
-      OR EXISTS (
-        SELECT 1
-        FROM UNNEST(analysis_include_dataset_patterns) AS pattern
-        WHERE REGEXP_CONTAINS(LOWER(ds), LOWER(pattern))
-      )
-    )
-    AND NOT EXISTS (
-      SELECT 1
-      FROM UNNEST(analysis_exclude_dataset_patterns) AS pattern
-      WHERE REGEXP_CONTAINS(LOWER(ds), LOWER(pattern))
-    )
-    ORDER BY ds
+    SELECT ds FROM UNNEST(changed_datasets) AS ds ORDER BY ds
   ) DO
 
   -- Progress marker. BigQuery prepends the render_dynamic_sql TEMP FUNCTION DDL
@@ -2897,6 +2953,8 @@ BEGIN
 
   END FOR;
 
+  END IF;  -- has_analysis_work
+
   -- --------------------------------------------------------------------------
   -- Run summary.
   -- 04_rebuild_impact_table.sql is executed after this script in daily operation.
@@ -2945,9 +3003,14 @@ END;
 -- ============================================================================
 -- STEP 4: Rebuild ranked impact paths
 -- ============================================================================
--- Progress marker: labels this step in the console's "All results" list.
-SELECT '===== STEP 4: rebuild ranked impact paths =====' AS processing_step;
-BEGIN
+-- Rebuild the ranked impact paths only when this run changed the direct
+-- dependencies: either something was re-analyzed (has_analysis_work) or the
+-- orphan cleanup removed direct-dependency rows for a deactivated object. An
+-- unchanged daily run leaves impact as-is and skips the rebuild.
+IF has_analysis_work OR orphan_direct_dep_deleted > 0 THEN
+  -- Progress marker: labels this step in the console's "All results" list.
+  SELECT '===== STEP 4: rebuild ranked impact paths =====' AS processing_step;
+  BEGIN
   DECLARE snapshot_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
   DECLARE max_rank INT64 DEFAULT configured_max_impact_rank;
 
@@ -3120,6 +3183,8 @@ BEGIN
   EXECUTE IMMEDIATE rendered_sql
   USING snapshot_time AS p_snapshot_time;
 END;
+
+END IF;  -- has_analysis_work OR orphan_direct_dep_deleted > 0
 
 -- ============================================================================
 -- PIPELINE SUMMARY

@@ -1,5 +1,20 @@
 # 1.5.0-032
 
+- Skip the expensive per-run work in `03_run_daily_lineage_pipeline.sql` when
+  nothing changed. The COLUMNS / COLUMN_FIELD_PATHS scan over every source dataset
+  (the heaviest scan in the run) was loaded unconditionally in STEP 1 but is only
+  consumed by STEP 3 analysis; it now moves into STEP 3 behind a has-changes gate.
+  A light registry probe computes `changed_datasets` (datasets with an analyzable
+  changed object, mirroring the materialization filter); when it is empty the
+  metadata scan and the entire per-dataset analysis loop are skipped, and the loop
+  now iterates only those datasets (no empty iterations). STEP 4 impact rebuild is
+  gated on `has_analysis_work OR orphan_direct_dep_deleted > 0` (captured via
+  `@@row_count` after the direct-dependency orphan DELETE), so it runs only when a
+  re-analysis happened or an object was deactivated; an unchanged daily run leaves
+  impact as-is. STEP 1 view sync, STEP 2 JOBS sync, and the orphan cleanup still
+  run every time (change detection and deactivation handling). SQL-only change;
+  the engine bundle is unaffected. Not yet validated against BigQuery.
+
 - Added `sql/maintenance/08_view_last_access.sql`, a standalone read-only report
   of each tracked VIEW's last access time, built on BigQuery audit logs sinked to
   BigQuery (new format: `protopayload_auditlog.metadataJson`,
