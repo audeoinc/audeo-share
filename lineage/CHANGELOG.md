@@ -1,5 +1,17 @@
 # 1.5.0-032
 
+- Added `sql/maintenance/08_view_last_access.sql`, a standalone read-only report
+  of each tracked VIEW's last access time. It aggregates
+  `INFORMATION_SCHEMA.JOBS_BY_PROJECT.referenced_tables` over a lookback window
+  and LEFT JOINs the definition registry, so views never queried in the window
+  show `last_accessed_at = NULL` (unused-view candidates) alongside the
+  pipeline's `last_seen_at` / `last_analyzed_at`. Region derives from
+  `@@location`; jobs project, target project, registry name, lookback, and
+  dataset include/exclude patterns are DECLAREs. Documents its limits (JOBS
+  ~180-day retention, per-project job scope, and that view-level access requires
+  the view to appear in `referenced_tables` — with a verification query).
+  Read-only; not part of the daily pipeline. Not yet validated against BigQuery.
+
 - Made `@@location` the single source of truth for the pipeline region in
   `03_run_daily_lineage_pipeline.sql`. `job_region` is now
   `DECLARE job_region STRING DEFAULT @@location` instead of a duplicated literal,

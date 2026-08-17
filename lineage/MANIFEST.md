@@ -197,6 +197,7 @@ Generated: 2026-07-28
 - `looker/README.md`
 - `sql/maintenance/06_analyze_changed_objects.sql`
 - `sql/maintenance/07_run_single_view_analysis.sql`
+- `sql/maintenance/08_view_last_access.sql`
 - `sql/pipeline/03_run_daily_lineage_pipeline.sql`
 - `sql/sample/02_setup_sample_environment.sql`
 - `sql/sample/02a_create_cost_measurement_view.sql`
