@@ -90,7 +90,11 @@ BEGIN
         SPLIT(view_resource, '/')[SAFE_OFFSET(3)] AS object_dataset,
         SPLIT(view_resource, '/')[SAFE_OFFSET(5)] AS object_name,
         a.timestamp AS accessed_at,
-        a.protopayload_auditlog.authenticationInfo.principalEmail AS principal_email
+        a.protopayload_auditlog.authenticationInfo.principalEmail AS principal_email,
+        JSON_VALUE(
+          a.protopayload_auditlog.metadataJson,
+          '$.jobChange.job.jobConfig.labels.data_source_id'
+        ) AS data_source_id
       FROM `%s` AS a,
         UNNEST(JSON_VALUE_ARRAY(
           a.protopayload_auditlog.metadataJson,
@@ -108,7 +112,9 @@ BEGIN
         COUNT(*) AS access_event_count,
         COUNT(DISTINCT principal_email) AS distinct_users,
         ARRAY_AGG(principal_email ORDER BY accessed_at DESC LIMIT 1)[SAFE_OFFSET(0)]
-          AS last_accessed_by
+          AS last_accessed_by,
+        ARRAY_AGG(data_source_id ORDER BY accessed_at DESC LIMIT 1)[SAFE_OFFSET(0)]
+          AS last_data_source_id
       FROM view_accesses
       WHERE object_project = @target_project_id
       GROUP BY object_project, object_dataset, object_name
@@ -124,6 +130,7 @@ BEGIN
       COALESCE(pv.access_event_count, 0) AS access_event_count,
       COALESCE(pv.distinct_users, 0) AS distinct_users,
       pv.last_accessed_by,
+      pv.last_data_source_id,
       reg.is_active,
       reg.last_seen_at,
       reg.last_analyzed_at

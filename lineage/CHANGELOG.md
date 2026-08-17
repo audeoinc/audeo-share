@@ -12,10 +12,13 @@
   (unused-view candidates) alongside the pipeline's `last_seen_at` /
   `last_analyzed_at`. Audit table location, target project, registry name,
   lookback, and dataset include/exclude patterns are DECLAREs; `@@location` must
-  match both the audit table and the repository (single-region). Documents the
-  legacy-format path, the same-region join requirement (with a pure-audit fallback
-  query), retention, and the cache-hit caveat. Read-only; not part of the daily
-  pipeline. Not yet validated against BigQuery.
+  match both the audit table and the repository (single-region). Also surfaces the
+  accessing job's `data_source_id` label (from
+  `$.jobChange.job.jobConfig.labels.data_source_id`) as `last_data_source_id` —
+  the value at the most recent access. Documents the legacy-format path, the
+  same-region join requirement (with a pure-audit fallback query), retention, and
+  the cache-hit caveat. Read-only; not part of the daily pipeline. Not yet
+  validated against BigQuery.
 
 - Made `@@location` the single source of truth for the pipeline region in
   `03_run_daily_lineage_pipeline.sql`. `job_region` is now
