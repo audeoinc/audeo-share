@@ -1,5 +1,27 @@
 # 1.5.0-032
 
+- Scope the STEP 3 column-metadata scan in `03_run_daily_lineage_pipeline.sql` to
+  only the source datasets that changed objects actually reference. Previously the
+  has-changes gate still loaded COLUMNS / COLUMN_FIELD_PATHS for *every* source
+  dataset in the region (the heaviest scan in the run) whenever anything changed,
+  even when the day's changes touched a handful of datasets. STEP 3 now runs a
+  discovery pre-pass: a `FOR` loop over `changed_datasets` runs the persistent UDF
+  in `source_discovery_only` mode once per changed object (per dataset, to bound
+  V8 heap), accumulates every row with its `source_discovery_json` into a
+  `all_changed_with_discovery` temp table, and collects the referenced source
+  dataset names (the dataset segment of each discovered source) into
+  `referenced_source_datasets`. The metadata load then unions
+  INFORMATION_SCHEMA.COLUMNS / COLUMN_FIELD_PATHS only for accessible source
+  datasets whose name is referenced (with an empty-but-typed fallback when nothing
+  is referenced). This is safe over-inclusion — it never loads less than the
+  referenced accessible sources, so lineage resolution is unchanged; it only skips
+  datasets no changed object references. The per-dataset analysis loop no longer
+  runs its own discovery UDF pass: it reads this dataset's rows back from
+  `all_changed_with_discovery` (isolation semantics unchanged — a failing object
+  still surfaces only as its own `source_discovery_json` cell and is validated
+  per-object). SQL-only change; the engine bundle is unaffected. Not yet validated
+  against BigQuery.
+
 - Skip the expensive per-run work in `03_run_daily_lineage_pipeline.sql` when
   nothing changed. The COLUMNS / COLUMN_FIELD_PATHS scan over every source dataset
   (the heaviest scan in the run) was loaded unconditionally in STEP 1 but is only

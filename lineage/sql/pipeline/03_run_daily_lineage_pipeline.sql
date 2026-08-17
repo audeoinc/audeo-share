@@ -1438,18 +1438,172 @@ BEGIN
   IF has_analysis_work THEN
 
   -- ------------------------------------------------------------------------
-  -- Source-column metadata, loaded only when there is analysis work. The COLUMNS
-  -- and COLUMN_FIELD_PATHS scans over every source dataset are the heaviest scan
-  -- in the run; gating them here is the main saving when nothing changed. Loaded
-  -- for ALL source datasets (not just the changed ones) so cross-dataset source
-  -- references still resolve while each pass analyzes a single dataset.
+  -- D -- discovery pre-pass. Run source discovery once for every changed object
+  -- (per dataset, for memory), accumulate the results, and collect the referenced
+  -- source dataset names -- so the column-metadata scan below covers only the
+  -- datasets the changed objects actually reference, not every source dataset.
+  -- The analysis loop reuses these accumulated discovery rows (no second UDF pass).
+  -- ------------------------------------------------------------------------
+  CREATE OR REPLACE TEMP TABLE all_changed_with_discovery (
+    object_project STRING,
+    object_dataset STRING,
+    object_name STRING,
+    object_type STRING,
+    generation_type STRING,
+    definition_text STRING,
+    definition_hash STRING,
+    source_discovery_json STRING
+  );
+  CREATE OR REPLACE TEMP TABLE referenced_source_datasets (dataset_name STRING);
+
+  FOR ds_row IN (
+    SELECT ds FROM UNNEST(changed_datasets) AS ds ORDER BY ds
+  ) DO
+
+  EXECUTE IMMEDIATE FORMAT(
+    "SELECT '----- STEP 3.discovery | dataset: %s -----' AS processing_step",
+    ds_row.ds
+  );
+
+  -- Materialize the changed-definition set for the current dataset only.
+  SET sql_template = """
+    CREATE OR REPLACE TEMP TABLE changed_definitions_to_analyze AS
+    SELECT
+      object_project,
+      object_dataset,
+      object_name,
+      object_type,
+      generation_type,
+      definition_text,
+      definition_hash
+    FROM
+      `__T_DEF_REGISTRY__`
+    WHERE is_active = TRUE
+      AND is_changed = TRUE
+      AND definition_text IS NOT NULL
+      AND object_type IN ('VIEW', 'TABLE')
+      AND (@include_tables OR object_type = 'VIEW')
+      AND (
+        ARRAY_LENGTH(@include_patterns) = 0
+        OR EXISTS (
+          SELECT 1 FROM UNNEST(@include_patterns) AS pattern
+          WHERE REGEXP_CONTAINS(LOWER(object_name), LOWER(pattern))
+        )
+      )
+      AND (
+        ARRAY_LENGTH(@include_dataset_patterns) = 0
+        OR EXISTS (
+          SELECT 1 FROM UNNEST(@include_dataset_patterns) AS pattern
+          WHERE REGEXP_CONTAINS(LOWER(object_dataset), LOWER(pattern))
+        )
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM UNNEST(@exclude_patterns) AS pattern
+        WHERE REGEXP_CONTAINS(LOWER(object_name), LOWER(pattern))
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM UNNEST(@exclude_dataset_patterns) AS pattern
+        WHERE REGEXP_CONTAINS(LOWER(object_dataset), LOWER(pattern))
+      )
+  """;
+
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
+  ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
+  AS 'Unresolved placeholder in changed-definitions materialization SQL.';
+  EXECUTE IMMEDIATE rendered_sql
+  USING
+    process_generated_tables AS include_tables,
+    analysis_include_object_patterns AS include_patterns,
+    analysis_exclude_object_patterns AS exclude_patterns,
+    ['^' || ds_row.ds || '$'] AS include_dataset_patterns,
+    CAST([] AS ARRAY<STRING>) AS exclude_dataset_patterns;
+
+  -- Source discovery: single UDF query over this dataset's changed set.
+  SET sql_template = """
+    CREATE OR REPLACE TEMP TABLE changed_definitions_with_discovery AS
+    SELECT
+      object_project,
+      object_dataset,
+      object_name,
+      object_type,
+      generation_type,
+      definition_text,
+      definition_hash,
+      `__UDF__`(
+        definition_text,
+        '[]',
+        @options_json,
+        NULL
+      ) AS source_discovery_json
+    FROM
+      changed_definitions_to_analyze
+  """;
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
+  ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
+  AS 'Unresolved placeholder in batch source-discovery SQL.';
+  EXECUTE IMMEDIATE rendered_sql
+  USING
+    TO_JSON_STRING(STRUCT(TRUE AS source_discovery_only)) AS options_json;
+
+  -- Accumulate this dataset's discovery, and its referenced source dataset names
+  -- (the dataset segment -- second-to-last -- of each discovered source name).
+  INSERT INTO all_changed_with_discovery (
+    object_project, object_dataset, object_name, object_type,
+    generation_type, definition_text, definition_hash, source_discovery_json
+  )
+  SELECT
+    object_project, object_dataset, object_name, object_type,
+    generation_type, definition_text, definition_hash, source_discovery_json
+  FROM changed_definitions_with_discovery;
+
+  INSERT INTO referenced_source_datasets (dataset_name)
+  SELECT DISTINCT
+    SPLIT(LOWER(JSON_VALUE(src_json, '$')), '.')[
+      SAFE_OFFSET(ARRAY_LENGTH(SPLIT(JSON_VALUE(src_json, '$'), '.')) - 2)
+    ]
+  FROM changed_definitions_with_discovery,
+    UNNEST(
+      COALESCE(
+        JSON_QUERY_ARRAY(source_discovery_json, '$.source_tables'),
+        CAST([] AS ARRAY<STRING>)
+      )
+    ) AS src_json
+  WHERE ARRAY_LENGTH(SPLIT(JSON_VALUE(src_json, '$'), '.')) >= 2;
+
+  END FOR;
+
+  -- ------------------------------------------------------------------------
+  -- D -- column metadata scoped to referenced source datasets. Safe
+  -- over-inclusion: load COLUMNS / COLUMN_FIELD_PATHS for any ACCESSIBLE source
+  -- dataset whose NAME is referenced by a changed object. This never loads less
+  -- than the referenced accessible sources (so lineage resolution is unchanged),
+  -- it only skips datasets no changed object references. COLUMNS and
+  -- COLUMN_FIELD_PATHS are the heaviest scan in the run. The COALESCE fallback
+  -- creates an empty but correctly-typed table when nothing is referenced (e.g.
+  -- changed objects with no physical sources).
   -- ------------------------------------------------------------------------
   SET columns_union_sql = (
     SELECT STRING_AGG(
       FORMAT('SELECT * FROM `%s.%s.INFORMATION_SCHEMA.COLUMNS`', project_id, dataset_id),
       ' UNION ALL '
     )
-    FROM (SELECT DISTINCT project_id, dataset_id FROM source_datasets)
+    FROM (
+      SELECT DISTINCT sd.project_id, sd.dataset_id
+      FROM source_datasets AS sd
+      WHERE LOWER(sd.dataset_id) IN (
+        SELECT LOWER(dataset_name)
+        FROM referenced_source_datasets
+        WHERE dataset_name IS NOT NULL
+      )
+    )
+  );
+  SET columns_union_sql = COALESCE(
+    columns_union_sql,
+    (SELECT FORMAT(
+       'SELECT * FROM `%s.%s.INFORMATION_SCHEMA.COLUMNS` WHERE FALSE',
+       project_id, dataset_id
+     )
+     FROM source_datasets LIMIT 1)
   );
   EXECUTE IMMEDIATE FORMAT(
     'CREATE OR REPLACE TEMP TABLE current_target_columns AS %s',
@@ -1461,7 +1615,23 @@ BEGIN
       FORMAT('SELECT * FROM `%s.%s.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS`', project_id, dataset_id),
       ' UNION ALL '
     )
-    FROM (SELECT DISTINCT project_id, dataset_id FROM source_datasets)
+    FROM (
+      SELECT DISTINCT sd.project_id, sd.dataset_id
+      FROM source_datasets AS sd
+      WHERE LOWER(sd.dataset_id) IN (
+        SELECT LOWER(dataset_name)
+        FROM referenced_source_datasets
+        WHERE dataset_name IS NOT NULL
+      )
+    )
+  );
+  SET field_paths_union_sql = COALESCE(
+    field_paths_union_sql,
+    (SELECT FORMAT(
+       'SELECT * FROM `%s.%s.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS` WHERE FALSE',
+       project_id, dataset_id
+     )
+     FROM source_datasets LIMIT 1)
   );
   EXECUTE IMMEDIATE FORMAT(
     'CREATE OR REPLACE TEMP TABLE current_target_column_field_paths AS %s',
@@ -1495,87 +1665,6 @@ BEGIN
     ds_row.ds
   );
 
-  -- --------------------------------------------------------------------------
-  -- Materialize the changed-definition set for the current dataset only.
-  -- --------------------------------------------------------------------------
-  SET sql_template = """
-    CREATE OR REPLACE TEMP TABLE changed_definitions_to_analyze AS
-    SELECT
-      object_project,
-      object_dataset,
-      object_name,
-      object_type,
-      generation_type,
-      definition_text,
-      definition_hash
-    FROM
-      `__T_DEF_REGISTRY__`
-    WHERE is_active = TRUE
-      AND is_changed = TRUE
-      AND definition_text IS NOT NULL
-      AND object_type IN ('VIEW', 'TABLE')
-      -- When generated-table collection is off, analyze Views only.
-      AND (@include_tables OR object_type = 'VIEW')
-      -- Include only objects whose NAME matches a configured regex (empty = all).
-      AND (
-        ARRAY_LENGTH(@include_patterns) = 0
-        OR EXISTS (
-          SELECT 1
-          FROM UNNEST(@include_patterns) AS pattern
-          WHERE REGEXP_CONTAINS(
-            LOWER(object_name),
-            LOWER(pattern)
-          )
-        )
-      )
-      -- Include only objects whose DATASET matches a configured regex (empty = all).
-      AND (
-        ARRAY_LENGTH(@include_dataset_patterns) = 0
-        OR EXISTS (
-          SELECT 1
-          FROM UNNEST(@include_dataset_patterns) AS pattern
-          WHERE REGEXP_CONTAINS(
-            LOWER(object_dataset),
-            LOWER(pattern)
-          )
-        )
-      )
-      -- Exclude objects whose name matches any configured regex.
-      AND NOT EXISTS (
-        SELECT 1
-        FROM UNNEST(@exclude_patterns) AS pattern
-        WHERE REGEXP_CONTAINS(
-          LOWER(object_name),
-          LOWER(pattern)
-        )
-      )
-      -- Exclude objects whose dataset matches any configured regex.
-      AND NOT EXISTS (
-        SELECT 1
-        FROM UNNEST(@exclude_dataset_patterns) AS pattern
-        WHERE REGEXP_CONTAINS(
-          LOWER(object_dataset),
-          LOWER(pattern)
-        )
-      )
-  """;
-
-  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
-
-  ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
-  AS 'Unresolved placeholder in changed-definitions materialization SQL.';
-
-  EXECUTE IMMEDIATE rendered_sql
-  USING
-    process_generated_tables AS include_tables,
-    analysis_include_object_patterns AS include_patterns,
-    analysis_exclude_object_patterns AS exclude_patterns,
-    -- Scope this pass to the current dataset only (anchored exact match). The
-    -- loop list already applied the configured include/exclude dataset filters,
-    -- so the per-object filters above are all that remain to vary here.
-    ['^' || ds_row.ds || '$'] AS include_dataset_patterns,
-    CAST([] AS ARRAY<STRING>) AS exclude_dataset_patterns;
-
   -- Snapshot the active VIEW registry once so the per-object staging query can
   -- classify source object types without referencing the (configurable-named)
   -- repository table directly inside a static statement.
@@ -1602,57 +1691,30 @@ BEGIN
   EXECUTE IMMEDIATE rendered_sql;
 
   -- --------------------------------------------------------------------------
-  -- Batch source discovery: run the persistent UDF in source_discovery_only
-  -- mode ONCE across every changed definition, instead of once per object
-  -- inside the loop below. The UDF is a per-row scalar function, so a single
-  -- query computes each object's source list while paying the JavaScript UDF
-  -- initialization cost a single time rather than once per object. This turns
-  -- the N per-object discovery jobs into one batch job.
+  -- Reuse the source discovery already computed by the pre-pass. The pre-pass ran
+  -- the persistent UDF in source_discovery_only mode once per changed object and
+  -- accumulated every row (with its source_discovery_json) into
+  -- all_changed_with_discovery. Here we simply read this dataset's rows back, so
+  -- the analysis loop never runs a second UDF discovery pass.
   --
-  -- Isolation is preserved: source_discovery_only never throws (it returns
-  -- analysis_status = 'PARTIAL_FAILURE' with an error payload for a failing
-  -- object), so one object's discovery failure surfaces only as that object's
-  -- source_discovery_json cell. The loop still validates the per-object status
-  -- and RAISEs into this object's EXCEPTION handler exactly as before.
+  -- Isolation is preserved exactly as before: source_discovery_only never threw
+  -- in the pre-pass (it returns analysis_status = 'PARTIAL_FAILURE' with an error
+  -- payload for a failing object), so a failing object surfaces only as its own
+  -- source_discovery_json cell. The loop still validates the per-object status and
+  -- RAISEs into this object's EXCEPTION handler exactly as before.
   -- --------------------------------------------------------------------------
-  -- Progress marker: discovery sub-step for the current dataset.
-  EXECUTE IMMEDIATE FORMAT(
-    "SELECT '----- STEP 3.discovery | dataset: %s -----' AS processing_step",
-    ds_row.ds
-  );
-
-  -- Build the discovery result table in a single UDF query over the current
-  -- dataset's changed set. Per-dataset scoping (the enclosing loop) bounds the
-  -- UDF invocation count; source_discovery_only never throws, so a failing
-  -- object surfaces only as its own source_discovery_json cell.
-  SET sql_template = """
-    CREATE OR REPLACE TEMP TABLE changed_definitions_with_discovery AS
-    SELECT
-      object_project,
-      object_dataset,
-      object_name,
-      object_type,
-      generation_type,
-      definition_text,
-      definition_hash,
-      `__UDF__`(
-        definition_text,
-        '[]',
-        @options_json,
-        NULL
-      ) AS source_discovery_json
-    FROM
-      changed_definitions_to_analyze
-  """;
-
-  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
-
-  ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
-  AS 'Unresolved placeholder in batch source-discovery SQL.';
-
-  EXECUTE IMMEDIATE rendered_sql
-  USING
-    TO_JSON_STRING(STRUCT(TRUE AS source_discovery_only)) AS options_json;
+  CREATE OR REPLACE TEMP TABLE changed_definitions_with_discovery AS
+  SELECT
+    object_project,
+    object_dataset,
+    object_name,
+    object_type,
+    generation_type,
+    definition_text,
+    definition_hash,
+    source_discovery_json
+  FROM all_changed_with_discovery
+  WHERE LOWER(object_dataset) = LOWER(ds_row.ds);
 
   -- ==========================================================================
   -- Batch analysis and publish (full set-based STEP 3).
