@@ -23,11 +23,17 @@
 --      views are queried from jobs billed to other projects, set jobs_project_id
 --      accordingly or union several projects' JOBS_BY_PROJECT (or use
 --      JOBS_BY_ORGANIZATION, which needs organization-level permission).
---   3. referenced_tables must list the VIEW itself for a view access to be
---      counted here. Verify this holds in your environment before relying on the
---      NULLs as "unused" (see the verification query at the bottom); if only the
---      underlying base tables appear, view-level access needs audit logs instead.
---   4. @@location must equal the region whose JOBS_BY_PROJECT you read.
+--   3. referenced_tables including the VIEW itself is NOT guaranteed. The docs
+--      define it as the "tables referenced by the query" and do not promise views;
+--      in practice a view access often lists both the view AND its underlying base
+--      tables, but this is case/version dependent. Verify it holds in your
+--      environment before trusting the NULLs as "unused" (see the verification
+--      query at the bottom). If only base tables appear, view-level access must
+--      come from Cloud Audit Logs (BigQueryAuditMetadata data-access events).
+--   4. referenced_tables is NOT populated for cache-hit query jobs, so accesses
+--      served from the results cache are invisible here and can make a used view
+--      look unused. Audit logs do capture cache hits.
+--   5. @@location must equal the region whose JOBS_BY_PROJECT you read.
 --
 -- Not yet validated against BigQuery.
 -- ============================================================================
