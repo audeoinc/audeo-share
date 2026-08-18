@@ -46,35 +46,44 @@
 SET @@location = 'asia-northeast1';
 
 BEGIN
-  -- Single source of truth for the GCP project. The views (target) and the
-  -- lineage repository share one project, so set it here once; their
-  -- *_project_id variables default to it. The audit-log sink can legitimately
-  -- live in a separate project, so audit_project_id also defaults to it but is
-  -- meant to be overridden when the sink is elsewhere.
+  -- --------------------------------------------------------------------------
+  -- [A] REQUIRED per deployment / region -- set these
+  -- --------------------------------------------------------------------------
+  -- GCP project. The views (target) and the lineage repository share one
+  -- project; set it once. Their *_project_id variables live in [C] and default
+  -- to this.
   DECLARE default_project_id STRING DEFAULT 'project_id';
 
-  -- Audit log sink location (the *_data_access table).
+  -- Audit log sink location (the *_data_access table). The sink can legitimately
+  -- live in a separate project, so audit_project_id defaults to the project above
+  -- but is meant to be overridden when the sink is elsewhere.
   DECLARE audit_project_id STRING DEFAULT default_project_id;
   DECLARE audit_dataset STRING DEFAULT 'audit_logs';
   DECLARE audit_table STRING DEFAULT 'cloudaudit_googleapis_com_data_access';
 
-  -- Project the views live in (filters referencedViews to these objects).
-  DECLARE target_project_id STRING DEFAULT default_project_id;
-
-  -- Lineage repository location (holds the definition registry).
-  DECLARE repository_project_id STRING DEFAULT default_project_id;
+  -- Lineage repository dataset (holds the definition registry). Its physical
+  -- registry table name is assembled from the prefix/suffix below -- keep them in
+  -- step with 01 setup.
   DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
-  -- Physical registry table name: keep prefix/suffix in step with 01 setup.
   DECLARE table_name_prefix STRING DEFAULT '';
   DECLARE table_name_suffix STRING DEFAULT '';
 
+  -- --------------------------------------------------------------------------
+  -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
+  -- --------------------------------------------------------------------------
   -- How far back to scan (days). Bounded by the sink table's retention.
   DECLARE lookback_days INT64 DEFAULT 180;
-
   -- Optional dataset-name regex filters on the reported views (empty = all).
   DECLARE include_dataset_patterns ARRAY<STRING> DEFAULT [];
   DECLARE exclude_dataset_patterns ARRAY<STRING> DEFAULT [];
 
+  -- --------------------------------------------------------------------------
+  -- [C] DERIVED / INTERNAL -- from [A]; DO NOT edit
+  -- --------------------------------------------------------------------------
+  -- Views' project and the repository project default to default_project_id
+  -- ([A]); override a line only if that role's objects live in a separate project.
+  DECLARE target_project_id STRING DEFAULT default_project_id;
+  DECLARE repository_project_id STRING DEFAULT default_project_id;
   DECLARE audit_fqn STRING;
   DECLARE registry_fqn STRING;
   DECLARE rendered_sql STRING;

@@ -12,31 +12,39 @@ SET @@location = 'asia-northeast1';
 -- lineage_config table; the checks below compare the live repository against
 -- these expected values.
 -- ============================================================================
+-- ----------------------------------------------------------------------------
+-- [A] REQUIRED per deployment / region -- set these
+-- ----------------------------------------------------------------------------
 -- Single source of truth for the GCP project. The repository, the UDFs, and the
 -- target all live in one project, so set it here once; the role-specific
--- bootstrap_*_project_id variables below default to it. Override an individual
--- role's line only if its objects live in a separate project.
+-- bootstrap_*_project_id variables live in [C] and default to it.
 DECLARE bootstrap_default_project_id STRING DEFAULT 'project_id';
-DECLARE bootstrap_repository_project_id STRING DEFAULT bootstrap_default_project_id;
+-- Repository dataset and UDF dataset (their *_project_id are in [C]).
 DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository';
--- Region values derive from `SET @@location` at the top (single source of truth,
--- single-region design): validation runs in that location and the repository and
--- target metadata must be there too. Set the region only at @@location.
-DECLARE bootstrap_repository_location STRING DEFAULT @@location;
-
-DECLARE bootstrap_udf_project_id STRING DEFAULT bootstrap_default_project_id;
 DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';
-DECLARE bootstrap_udf_function_name STRING DEFAULT 'analyze_lineage_json';
+-- GCS URI of the uploaded lineage_udf_bundle.js (deployment-specific).
 DECLARE bootstrap_udf_library_uri STRING DEFAULT
   'gs://YOUR_BUCKET/YOUR_PATH/lineage_udf_bundle.js';
 
-DECLARE bootstrap_target_project_id STRING DEFAULT bootstrap_default_project_id;
-DECLARE bootstrap_target_region STRING DEFAULT @@location;
+-- ----------------------------------------------------------------------------
+-- [B] BEHAVIOR OPTIONS -- keep aligned with 01 / 03; defaults are safe
+-- ----------------------------------------------------------------------------
+DECLARE bootstrap_udf_function_name STRING DEFAULT 'analyze_lineage_json';
 DECLARE bootstrap_target_datasets ARRAY<STRING> DEFAULT ['dataset'];
-
 DECLARE bootstrap_parser_strict_mode BOOL DEFAULT FALSE;
 DECLARE bootstrap_compact_export BOOL DEFAULT TRUE;
 DECLARE bootstrap_max_impact_rank INT64 DEFAULT 100;
+
+-- ----------------------------------------------------------------------------
+-- [C] DERIVED / INTERNAL -- computed from [A] or @@location; DO NOT edit
+-- ----------------------------------------------------------------------------
+-- Role-specific projects default to bootstrap_default_project_id ([A]); the
+-- repository / target regions mirror @@location (single source of truth at top).
+DECLARE bootstrap_repository_project_id STRING DEFAULT bootstrap_default_project_id;
+DECLARE bootstrap_repository_location STRING DEFAULT @@location;
+DECLARE bootstrap_udf_project_id STRING DEFAULT bootstrap_default_project_id;
+DECLARE bootstrap_target_project_id STRING DEFAULT bootstrap_default_project_id;
+DECLARE bootstrap_target_region STRING DEFAULT @@location;
 
 DECLARE repository_dataset_full_name STRING DEFAULT FORMAT(
   '%s.%s',

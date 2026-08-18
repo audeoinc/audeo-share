@@ -53,20 +53,32 @@ BEGIN
   -- ==========================================================================
   -- Runtime environment settings
   -- ==========================================================================
-  -- Single source of truth for the GCP project (repository, target, and UDFs
-  -- share one project). Set it once here; the role-specific *_project_id
-  -- variables default to it. Override a role's line only if it lives elsewhere.
+  -- --------------------------------------------------------------------------
+  -- [A] REQUIRED per deployment / region -- set these
+  -- --------------------------------------------------------------------------
+  -- GCP project. Repository, target, and UDFs share one project; set it once.
+  -- The role-specific *_project_id variables live in [C] and default to this.
   DECLARE default_project_id STRING DEFAULT 'project_id';
-  DECLARE repository_project_id STRING DEFAULT default_project_id;
-  DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
-  DECLARE target_project_id STRING DEFAULT default_project_id;
-  DECLARE target_dataset STRING DEFAULT 'dataset';
+  -- Region (must equal @@location) and the repository / target / UDF datasets.
   DECLARE job_region STRING DEFAULT 'asia-northeast1';
-  DECLARE udf_project_id STRING DEFAULT default_project_id;
+  DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
+  DECLARE target_dataset STRING DEFAULT 'dataset';
   DECLARE udf_dataset STRING DEFAULT 'dataset';
+
+  -- --------------------------------------------------------------------------
+  -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
+  -- --------------------------------------------------------------------------
   DECLARE udf_function_name STRING DEFAULT 'analyze_lineage_json';
   DECLARE parser_strict_mode BOOL DEFAULT FALSE;
 
+  -- --------------------------------------------------------------------------
+  -- [C] DERIVED / INTERNAL -- from [A]; DO NOT edit
+  -- --------------------------------------------------------------------------
+  -- Role-specific projects default to default_project_id ([A]); override a line
+  -- only if that role's objects live in a separate project.
+  DECLARE repository_project_id STRING DEFAULT default_project_id;
+  DECLARE target_project_id STRING DEFAULT default_project_id;
+  DECLARE udf_project_id STRING DEFAULT default_project_id;
   DECLARE sql_template STRING;
   DECLARE rendered_sql STRING;
 

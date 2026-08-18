@@ -20,19 +20,43 @@ SET @@location = 'asia-northeast1';
 -- Prerequisite:
 --   Upload lineage_udf_bundle.js to the configured GCS URI before execution.
 -- ============================================================================
+-- ============================================================================
+-- CONFIGURATION (edit here)
+-- ============================================================================
+-- Settings are split so it is obvious what to touch:
+--   [A] REQUIRED per deployment / region -- review and set these every time.
+--   [B] BEHAVIOR OPTIONS -- safe to leave at the defaults; tune as needed.
+--   [C] DERIVED / INTERNAL -- computed from [A] or @@location; DO NOT edit.
+-- The REGION is set once at `SET @@location` at the top of this file.
+--
+-- ----------------------------------------------------------------------------
+-- [A] REQUIRED per deployment / region -- set these
+-- ----------------------------------------------------------------------------
 -- Single source of truth for the GCP project. The repository, the UDFs, and the
 -- smoke-test target all live in one project, so set it here once; the
--- role-specific bootstrap_*_project_id variables below default to it. Override an
--- individual role's line only if its objects live in a separate project.
+-- role-specific bootstrap_*_project_id variables live in [C] and default to it.
 DECLARE bootstrap_default_project_id STRING DEFAULT 'project_id';
-DECLARE bootstrap_repository_project_id STRING DEFAULT bootstrap_default_project_id;
+-- Repository dataset (holds the lineage_* tables) and UDF dataset (holds the
+-- functions created here). Their *_project_id are in [C].
 DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository';
--- Derived from `SET @@location` at the top (single source of truth): the
--- repository lives in the location this setup runs in. Set the region only there.
-DECLARE bootstrap_repository_location STRING DEFAULT @@location;
-
-DECLARE bootstrap_udf_project_id STRING DEFAULT bootstrap_default_project_id;
 DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';
+-- GCS URI of the uploaded lineage_udf_bundle.js (deployment-specific).
+DECLARE bootstrap_udf_library_uri STRING DEFAULT
+  'gs://YOUR_BUCKET/YOUR_PATH/lineage_udf_bundle.js';
+-- Repository table naming. Physical table names are assembled as
+--   prefix + marker + canonical base name + suffix
+-- in the SET lines below. The prefix and suffix change per environment (e.g. a
+-- region tag like suffix='_tky'); the master/transaction marker ('m_' / 't_') is
+-- an inline literal in each SET line (edit it only to reclassify a table).
+-- Include any '_' separators in the prefix and suffix; leave a segment empty to
+-- omit it.
+DECLARE bootstrap_table_name_prefix STRING DEFAULT '';
+DECLARE bootstrap_table_name_suffix STRING DEFAULT '';
+
+-- ----------------------------------------------------------------------------
+-- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
+-- ----------------------------------------------------------------------------
+-- UDF function names created in bootstrap_udf_dataset; keep them in step with 03.
 DECLARE bootstrap_udf_function_name STRING DEFAULT 'analyze_lineage_json';
 -- Companion scalar UDF that returns a SQL structural fingerprint. Used by
 -- 03_run_daily_lineage_pipeline.sql to collapse structurally-identical
@@ -43,35 +67,27 @@ DECLARE bootstrap_udf_fingerprint_function_name STRING
 -- Used by 03_run_daily_lineage_pipeline.sql; created in the same UDF dataset.
 DECLARE bootstrap_udf_render_function_name STRING
   DEFAULT 'render_dynamic_sql';
-DECLARE bootstrap_udf_library_uri STRING DEFAULT
-  'gs://YOUR_BUCKET/YOUR_PATH/lineage_udf_bundle.js';
-
--- Target project/dataset are used only by the UDF smoke test below (to build a
+-- Target dataset(s) used only by the UDF smoke test below (to build a
 -- representative physical-column identity). The pipeline's own scan scope is set
 -- in 03_run_daily_lineage_pipeline.sql.
-DECLARE bootstrap_target_project_id STRING DEFAULT bootstrap_default_project_id;
 DECLARE bootstrap_target_datasets ARRAY<STRING> DEFAULT ['dataset'];
-
 -- Smoke-test parser options (mirror 03's parser_strict_mode / compact_export).
 DECLARE bootstrap_parser_strict_mode BOOL DEFAULT FALSE;
 DECLARE bootstrap_compact_export BOOL DEFAULT TRUE;
 
 -- ----------------------------------------------------------------------------
--- Repository table naming
---
--- Physical table names are assembled as
---   prefix + marker + canonical base name + suffix
--- in the SET lines below. The prefix and suffix change per environment, so
--- they are variables. The master/transaction marker ('m_' / 't_') rarely
--- changes, so it is written directly as a literal in each SET line; edit that
--- literal only when a table must be reclassified. Include any '_' separators
--- in the prefix, marker, and suffix. Example: prefix='ope_', marker 'm_',
--- suffix='_tky' yields ope_m_lineage_definition_registry_tky. Leave a segment
--- empty to omit it.
+-- [C] DERIVED / INTERNAL -- computed from [A] or @@location; DO NOT edit
 -- ----------------------------------------------------------------------------
-DECLARE bootstrap_table_name_prefix STRING DEFAULT '';
-DECLARE bootstrap_table_name_suffix STRING DEFAULT '';
+-- Role-specific projects default to bootstrap_default_project_id ([A]); override
+-- a line only if that role's objects live in a separate project. The repository
+-- location mirrors @@location (the single source of truth set at the top).
+DECLARE bootstrap_repository_project_id STRING DEFAULT bootstrap_default_project_id;
+DECLARE bootstrap_repository_location STRING DEFAULT @@location;
+DECLARE bootstrap_udf_project_id STRING DEFAULT bootstrap_default_project_id;
+DECLARE bootstrap_target_project_id STRING DEFAULT bootstrap_default_project_id;
 
+-- Repository physical table names, assembled by the SET lines below from
+-- bootstrap_table_name_prefix / _suffix ([A]); plus smoke-test work variables.
 DECLARE table_definition_registry STRING;
 DECLARE table_direct_dependency STRING;
 DECLARE table_impact STRING;

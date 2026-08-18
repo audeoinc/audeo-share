@@ -1,5 +1,23 @@
 # 1.5.0-032
 
+- Applied the same `[A] REQUIRED / [B] BEHAVIOR OPTIONS / [C] DERIVED-INTERNAL`
+  three-section DECLARE layout to the remaining scripts: `01_setup_lineage_environment.sql`,
+  `04_validate_lineage_environment.sql`, `06_analyze_changed_objects.sql`,
+  `07_run_single_view_analysis.sql`, and `08_view_last_access.sql`. In each, the
+  must-edit settings are grouped first ([A]: default project, repository/UDF
+  datasets, region, the GCS bundle URI in 01/04, the audit sink in 08, table
+  name prefix/suffix, the single target view in 07), tuning knobs follow ([B]:
+  UDF names, parser/compact/max-impact options, lookback and dataset-filter
+  patterns), and the auto-computed values are separated at the end and marked
+  "DO NOT edit" ([C]: the role-specific *_project_id defaulting to the master,
+  the @@location-mirroring region/location variables, FORMAT-derived names, and
+  all working variables). Pure reordering of DECLAREs plus comments: every
+  variable, type, and default is unchanged (verified each declared exactly once,
+  the master project variable still precedes the role variables that default to
+  it, and all DECLAREs remain ahead of the block's first statement). Behavior is
+  identical. SQL-only; the engine bundle is unaffected. Not yet validated against
+  BigQuery.
+
 - Reorganized the `03_run_daily_lineage_pipeline.sql` DECLARE block into three
   labelled sections so operators can see at a glance what to edit per deployment /
   region. `[A] REQUIRED per deployment / region` (default_project_id, repository /
