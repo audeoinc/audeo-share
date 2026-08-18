@@ -32,46 +32,34 @@ SET @@location = 'asia-northeast1';
 
 BEGIN
 -- ============================================================================
--- Runtime environment settings
+-- CONFIGURATION (edit here)
 -- ============================================================================
--- These scalar values are intentionally defined in this script. There is no
--- lineage_config table; this pipeline is configured entirely here.
+-- This pipeline has no lineage_config table; every setting lives in this file.
+-- Settings are split into three sections so it is obvious what to touch:
+--   [A] REQUIRED per deployment / region -- review and set these every time.
+--   [B] BEHAVIOR OPTIONS -- safe to leave at the defaults; tune as needed.
+--   [C] DERIVED / INTERNAL (further below) -- values computed from [A]/[B] or
+--       resolved at runtime; DO NOT edit.
+-- The pipeline REGION is set once at `SET @@location` at the very top of this
+-- file (the single source of truth); every other project/region-specific knob is
+-- in section [A] below. When standing up a new region, copy this file and change
+-- @@location plus section [A].
 --
--- Region for the whole pipeline (repository, target Views, source metadata, and
--- JOBS are all single-region). Derived from `SET @@location` at the top of this
--- file, which is the single source of truth: @@location sets the job execution
--- location, and job_region carries the same value as a string for building the
--- region-qualified INFORMATION_SCHEMA identifiers (`region-<job_region>`), which
--- cannot be parameterized. Set the region only at the @@location line above.
-DECLARE job_region STRING DEFAULT @@location;
+-- ----------------------------------------------------------------------------
+-- [A] REQUIRED per deployment / region -- set these
+-- ----------------------------------------------------------------------------
 -- Single source of truth for the GCP project. The repository, the analyzed
--- Views (target), and the UDFs all live in one project, so set it here once; the
--- role-specific *_project_id variables below default to it. Override an
--- individual role's line only in the rare case its objects live in a separate
--- project. (Physical source tables can span projects and are configured
--- separately via source_project_filters below.)
+-- Views (target), and the UDFs all live in one project, so set it here once. The
+-- role-specific *_project_id variables (repository / target / udf) live in the
+-- [C] DERIVED section and default to this; override one of them there only in the
+-- rare case its objects live in a separate project. (Physical source tables can
+-- span projects and are configured separately via source_project_filters below.)
 DECLARE default_project_id STRING DEFAULT 'project_id';
-DECLARE repository_project_id STRING DEFAULT default_project_id;
+-- Repository dataset (holds the lineage_* tables) and UDF dataset (holds the
+-- analyze / fingerprint / render functions created by 01). Both live in the
+-- project above (their *_project_id are in [C]); set the dataset names here.
 DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
-DECLARE target_project_id STRING DEFAULT default_project_id;
--- Target datasets holding the Views to analyze (single target project). These
--- are NOT listed explicitly: they are resolved at runtime by scanning the target
--- project's datasets in job_region (INFORMATION_SCHEMA.SCHEMATA) and filtering by
--- the regex patterns below. Each resolved dataset is scanned via
--- `target_project.dataset.INFORMATION_SCHEMA.VIEWS`.
---   include: empty array = every dataset in the region; otherwise keep datasets
---            whose name matches ANY include pattern.
---   exclude: empty array = exclude none; drop datasets matching ANY pattern.
--- Matching is case-insensitive (both the dataset name and the pattern are
--- lowercased before REGEXP_CONTAINS), so patterns may be written in any case.
--- Example: only "mart"/"dwh" datasets, excluding temp/test:
---   include [r'^mart_', r'^dwh_'], exclude [r'_tmp$', r'test']
-DECLARE target_dataset_include_patterns ARRAY<STRING> DEFAULT [];
-DECLARE target_dataset_exclude_patterns ARRAY<STRING> DEFAULT [];
--- Resolved at runtime from the patterns above (see the resolution block below).
-DECLARE target_datasets ARRAY<STRING>;
-DECLARE target_datasets_lower ARRAY<STRING>;
-DECLARE view_defs_union_sql STRING;
+DECLARE udf_dataset STRING DEFAULT 'dataset';
 
 -- Projects that hold physical source tables, each with include/exclude
 -- dataset-name regex patterns (same convention as target_dataset_*_patterns:
@@ -102,8 +90,54 @@ DECLARE source_project_filters
       CAST([] AS ARRAY<STRING>) AS dataset_exclude_patterns
     )
   ];
-DECLARE udf_project_id STRING DEFAULT default_project_id;
-DECLARE udf_dataset STRING DEFAULT 'dataset';
+
+-- Target datasets holding the Views to analyze (single target project). These
+-- are NOT listed explicitly: they are resolved at runtime by scanning the target
+-- project's datasets in job_region (INFORMATION_SCHEMA.SCHEMATA) and filtering by
+-- the regex patterns below. Each resolved dataset is scanned via
+-- `target_project.dataset.INFORMATION_SCHEMA.VIEWS`.
+--   include: empty array = every dataset in the region; otherwise keep datasets
+--            whose name matches ANY include pattern.
+--   exclude: empty array = exclude none; drop datasets matching ANY pattern.
+-- Matching is case-insensitive (both the dataset name and the pattern are
+-- lowercased before REGEXP_CONTAINS), so patterns may be written in any case.
+-- Example: only "mart"/"dwh" datasets, excluding temp/test:
+--   include [r'^mart_', r'^dwh_'], exclude [r'_tmp$', r'test']
+DECLARE target_dataset_include_patterns ARRAY<STRING> DEFAULT [];
+DECLARE target_dataset_exclude_patterns ARRAY<STRING> DEFAULT [];
+
+-- STEP 2 service accounts (consumed only when process_generated_tables = TRUE).
+-- Previously read from the lineage_execution_account_config table; declared here
+-- so the whole pipeline is configured in this single file.
+--   scheduled_query_service_accounts : accounts that run BigQuery Scheduled
+--     Queries (also gated by the scheduled_query label unless
+--     require_scheduled_query_label = FALSE, in [B]).
+--   dag_service_accounts             : accounts that run DAG / Airflow jobs.
+-- Both arrays must be non-empty (asserted in STEP 2).
+DECLARE scheduled_query_service_accounts ARRAY<STRING> DEFAULT [
+  'project_id@appspot.gserviceaccount.com'
+];
+DECLARE dag_service_accounts ARRAY<STRING> DEFAULT [
+  'project_id@appspot.gserviceaccount.com'
+];
+
+-- Repository table naming. Physical table names are assembled as
+--   prefix + marker + canonical base name + suffix
+-- in the SET lines further below. The prefix and suffix change per environment
+-- (e.g. a region tag like suffix='_tky'), so they are variables here. The
+-- master/transaction marker ('m_' / 't_') rarely changes, so it is written
+-- directly as a literal in each SET line; edit that literal only when a table
+-- must be reclassified. Include any '_' separators in the prefix and suffix.
+-- Example: prefix='ope_', marker 'm_', suffix='_tky' yields
+-- ope_m_lineage_definition_registry_tky. Leave a segment empty to omit it.
+DECLARE table_name_prefix STRING DEFAULT '';
+DECLARE table_name_suffix STRING DEFAULT '';
+
+-- ----------------------------------------------------------------------------
+-- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
+-- ----------------------------------------------------------------------------
+-- UDF function names. These must match the names 01 setup created in udf_dataset;
+-- change them only if you deliberately renamed the functions there.
 DECLARE udf_function_name STRING DEFAULT 'analyze_lineage_json';
 -- Companion fingerprint UDF (registered by 01). Used to collapse
 -- structurally-identical rotating-destination JOBS (temp / ephemeral) to one
@@ -114,6 +148,7 @@ DECLARE udf_fingerprint_function_name STRING DEFAULT 'fingerprint_lineage_sql';
 -- via udf_project_id / udf_dataset -- a static function reference cannot use a
 -- variable for its project/dataset.
 DECLARE udf_render_function_name STRING DEFAULT 'render_dynamic_sql';
+-- Parser strictness and the maximum impact rank retained by STEP 4.
 DECLARE parser_strict_mode BOOL DEFAULT FALSE;
 DECLARE configured_max_impact_rank INT64 DEFAULT 100;
 
@@ -161,26 +196,6 @@ DECLARE analysis_exclude_object_patterns ARRAY<STRING> DEFAULT [];
 DECLARE analysis_include_dataset_patterns ARRAY<STRING> DEFAULT [];
 DECLARE analysis_exclude_dataset_patterns ARRAY<STRING> DEFAULT [];
 
--- ----------------------------------------------------------------------------
--- STEP 2 parameters (Scheduled Query / DAG generated-table collection)
---
--- Consumed only when process_generated_tables = TRUE. Service accounts were
--- previously read from the lineage_execution_account_config table; they are now
--- declared here so the whole pipeline is configured in this single file.
---
---   scheduled_query_service_accounts : accounts that run BigQuery Scheduled
---     Queries (also gated by the scheduled_query label unless
---     require_scheduled_query_label = FALSE).
---   dag_service_accounts             : accounts that run DAG / Airflow jobs.
--- Both arrays must be non-empty (asserted in STEP 2).
--- ----------------------------------------------------------------------------
-DECLARE scheduled_query_service_accounts ARRAY<STRING> DEFAULT [
-  'project_id@appspot.gserviceaccount.com'
-];
-DECLARE dag_service_accounts ARRAY<STRING> DEFAULT [
-  'project_id@appspot.gserviceaccount.com'
-];
-
 -- Lookback window over INFORMATION_SCHEMA.JOBS. The initial window is used on
 -- the first run (empty job registry); the incremental window is used thereafter.
 DECLARE initial_lookback_days INT64 DEFAULT 60;
@@ -209,23 +224,31 @@ DECLARE require_scheduled_query_label BOOL DEFAULT TRUE;
 -- not use this. This is a label only; no dataset by this name needs to exist.
 DECLARE ephemeral_object_dataset_label STRING DEFAULT 'ephemeral_generated_sql';
 
--- ----------------------------------------------------------------------------
--- Repository table naming
---
--- Physical table names are assembled as
---   prefix + marker + canonical base name + suffix
--- in the SET lines below. The prefix and suffix change per environment, so
--- they are variables. The master/transaction marker ('m_' / 't_') rarely
--- changes, so it is written directly as a literal in each SET line; edit that
--- literal only when a table must be reclassified. Include any '_' separators
--- in the prefix, marker, and suffix. Example: prefix='ope_', marker 'm_',
--- suffix='_tky' yields ope_m_lineage_definition_registry_tky. Leave a segment
--- empty to omit it. The names are injected into every repository DML via __T_*__
--- placeholders handled by render_dynamic_sql().
--- ----------------------------------------------------------------------------
-DECLARE table_name_prefix STRING DEFAULT '';
-DECLARE table_name_suffix STRING DEFAULT '';
+-- ============================================================================
+-- [C] DERIVED / INTERNAL -- computed from [A]/[B] or resolved at runtime; DO NOT edit
+-- ============================================================================
+-- Region string for the region-qualified INFORMATION_SCHEMA identifiers
+-- (`region-<job_region>`), which cannot be parameterized. Mirrors @@location (the
+-- single source of truth set at the top of this file); never set it here.
+DECLARE job_region STRING DEFAULT @@location;
 
+-- Role-specific projects. Default to default_project_id ([A]); override a single
+-- line here only if that role's objects live in a separate project.
+DECLARE repository_project_id STRING DEFAULT default_project_id;
+DECLARE target_project_id STRING DEFAULT default_project_id;
+DECLARE udf_project_id STRING DEFAULT default_project_id;
+
+-- Target datasets resolved at runtime from target_dataset_*_patterns ([A]) by
+-- scanning INFORMATION_SCHEMA.SCHEMATA (see the resolution block below).
+DECLARE target_datasets ARRAY<STRING>;
+DECLARE target_datasets_lower ARRAY<STRING>;
+DECLARE view_defs_union_sql STRING;
+
+-- Repository physical table names: prefix + marker + canonical base + suffix,
+-- assembled by the SET lines below from table_name_prefix / table_name_suffix
+-- ([A]). The 'm_' / 't_' marker literal is inline in each SET line; the names are
+-- injected into every repository DML via __T_*__ placeholders handled by
+-- render_dynamic_sql().
 DECLARE table_definition_registry STRING;
 DECLARE table_direct_dependency STRING;
 DECLARE table_impact STRING;

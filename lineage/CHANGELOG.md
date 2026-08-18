@@ -1,5 +1,23 @@
 # 1.5.0-032
 
+- Reorganized the `03_run_daily_lineage_pipeline.sql` DECLARE block into three
+  labelled sections so operators can see at a glance what to edit per deployment /
+  region. `[A] REQUIRED per deployment / region` (default_project_id, repository /
+  UDF datasets, source_project_filters, target dataset patterns, STEP 2 service
+  accounts, table name prefix/suffix) is grouped first; `[B] BEHAVIOR OPTIONS`
+  (UDF names, parser_strict_mode, max impact rank, process_generated_tables,
+  registry/analysis filters, lookback windows, statement types, label toggles)
+  follows; `[C] DERIVED / INTERNAL` (job_region ← @@location, the role-specific
+  *_project_id ← default_project_id, the runtime-resolved target_datasets, and all
+  working variables) is separated at the end and marked "DO NOT edit". The header
+  documents the split and points to `SET @@location` (top of file) plus section
+  [A] as the only things to change when standing up a new region. Purely a
+  reordering of DECLAREs plus comments: every variable, type, and default is
+  unchanged (verified each declared exactly once, no duplicates), the master
+  `default_project_id` still precedes the role variables that default to it, and
+  all DECLAREs remain ahead of the first SET. Behavior is identical. SQL-only; the
+  engine bundle is unaffected. Not yet validated against BigQuery.
+
 - Made the GCP project a single point of configuration in every pipeline/maintenance
   script. Each script previously repeated `DEFAULT 'project_id'` for each role
   (repository / target / UDF, plus audit in 08), even though those roles always share
