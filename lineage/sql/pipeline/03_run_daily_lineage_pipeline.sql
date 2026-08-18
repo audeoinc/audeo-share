@@ -2225,9 +2225,24 @@ BEGIN
       ) AS source_row
       WHERE JSON_VALUE(source_row, '$') IS NOT NULL
     ),
+    -- exists_in_tables must be judged on the SAME dataset scope that column
+    -- metadata was collected for. current_target_tables covers every source
+    -- dataset (STEP 2 needs it), but current_target_columns is scoped to the
+    -- referenced source datasets (option D). Restrict the existence check to those
+    -- same datasets so a source whose dataset was NOT column-scanned is treated as
+    -- absent (has_absent_source), not as present-but-uncollected. Without this,
+    -- the wider TABLES scope makes a source that exists in an un-scanned dataset
+    -- look present-but-uncollected -> object non-publishable -> its absent-source
+    -- not-found WARNINGS leak into lineage_diagnostic. Genuine coverage gaps within
+    -- referenced datasets (table present, columns empty) are still flagged.
     tables AS (
       SELECT DISTINCT table_catalog, table_schema, table_name
       FROM current_target_tables
+      WHERE LOWER(table_schema) IN (
+        SELECT LOWER(dataset_name)
+        FROM referenced_source_datasets
+        WHERE dataset_name IS NOT NULL
+      )
     ),
     cols AS (
       SELECT DISTINCT table_catalog, table_schema, table_name

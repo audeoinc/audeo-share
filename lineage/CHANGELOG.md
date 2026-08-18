@@ -1,5 +1,26 @@
 # 1.5.0-032
 
+- Fixed absent-source not-found WARNINGS leaking into `lineage_diagnostic` for
+  JOBS-sourced objects after the option-D metadata scoping. STEP 3 suppresses the
+  diagnostics of *publishable* objects (exact COMPLETED, or COMPLETED_WITH_WARNINGS
+  whose warnings are all from sources absent from INFORMATION_SCHEMA.TABLES), so a
+  reference to a gone table should finish clean. But option D scoped
+  `current_target_columns` (the COLUMNS scan, used for `has_columns`) to only the
+  referenced source datasets, while `current_target_tables` (the TABLES scan, used
+  for `exists_in_tables`) still covers every source dataset because STEP 2 needs
+  it. In `batch_object_source_flags` this scope mismatch made a source that exists
+  in a dataset that was NOT column-scanned look `exists_in_tables = TRUE` AND
+  `has_columns = FALSE` → `has_present_uncollected_source = TRUE` → object
+  non-publishable → its absent-source not-found warnings were recorded. Fix:
+  restrict the existence check in `batch_object_source_flags` to the same
+  referenced datasets the columns were collected for, so a source whose dataset
+  was not column-scanned is treated as absent (`has_absent_source`, suppressed)
+  rather than present-but-uncollected. Genuine coverage gaps within a referenced
+  dataset (table present, columns empty) are still flagged and still FAIL. Before
+  option D both scans covered all datasets, so this class of object was already
+  suppressed — this restores that for the scoped world. SQL-only (STEP 3 flag
+  computation); the engine bundle is unaffected. Not yet validated against BigQuery.
+
 - Stopped an unqualified column reference to a no-longer-existing source table from
   hard-failing analysis of a JOBS-sourced object. A DAG / generated-table SQL often
   references temporary or short-lived tables that are gone by analysis time.
