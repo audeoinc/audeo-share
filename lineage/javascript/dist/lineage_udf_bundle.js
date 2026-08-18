@@ -10263,6 +10263,7 @@ class PhysicalColumnResolver {
     const physicalMatches = [];
     const derivedMatches = [];
     const unnestCandidates = [];
+    const metadatalessPhysicalSources = [];
 
     for (const sourceId of candidateSourceIds) {
       const source = this.sourceById.get(sourceId);
@@ -10276,6 +10277,8 @@ class PhysicalColumnResolver {
 
         if (columns.length > 0) {
           physicalMatches.push({ source, columns });
+        } else if (!this.#hasMetadataForSource(source)) {
+          metadatalessPhysicalSources.push(source);
         }
 
         continue;
@@ -10326,6 +10329,25 @@ class PhysicalColumnResolver {
         { ...reference, source_id: unnestCandidates[0].source_id },
         context
       );
+    }
+
+    /*
+     * 修飾なし列がどの present なソース(メタデータ収集済み)にも無く、かつ候補に
+     * 「列が1つも収集されていない物理ソース」がある場合。そのソースは実体が
+     * 消えている(一時/短命テーブル)か、まだメタデータ未収集のいずれか。列は
+     * その未収集ソース由来である可能性があり、ERROR(PHYSICAL_COLUMN_NOT_FOUND)と
+     * 断定できない。修飾ありの場合(#resolveAgainstPhysicalSource)と同様に
+     * PHYSICAL_METADATA_NOT_FOUND(WARNING)として、その未収集ソースへ帰属させる。
+     * 「実体が消えている」か「未収集(カバレッジ不足)」かの区別は 03 パイプライン側が
+     * INFORMATION_SCHEMA.TABLES で行い、前者は publish、後者は FAILED として扱う。
+     * totalMatches>1(複数の present ソースに存在)の AMBIGUOUS 判定は変更しない。
+     */
+    if (totalMatches === 0 && metadatalessPhysicalSources.length > 0) {
+      return this.#createPhysicalReference(reference, {
+        physicalStatus: "PHYSICAL_METADATA_NOT_FOUND",
+        sourceId: metadatalessPhysicalSources[0].source_id,
+        physicalColumns: []
+      });
     }
 
     return this.#createPhysicalReference(reference, {

@@ -1,5 +1,33 @@
 # 1.5.0-032
 
+- Stopped an unqualified column reference to a no-longer-existing source table from
+  hard-failing analysis of a JOBS-sourced object. A DAG / generated-table SQL often
+  references temporary or short-lived tables that are gone by analysis time.
+  Symptom: `SELECT col1 FROM ghost_ds.ghost_table AS a JOIN real_ds.real_t AS b ON
+  a.id = b.id`, where `ghost_table` has no collected columns and `real_t` does not
+  contain `col1`, produced `PHYSICAL_COLUMN_NOT_FOUND` (ERROR) →
+  COMPLETED_WITH_ERRORS → non-publishable → registry FAILED and retried every run.
+  A *qualified* reference to the same absent table (`a.col1`) was already only a
+  `PHYSICAL_METADATA_NOT_FOUND` WARNING (via `#resolveAgainstPhysicalSource` /
+  `#hasMetadataForSource`), so the prior absent-source publish handling (STEP 3
+  `batch_object_source_flags`, which classifies a source absent from
+  INFORMATION_SCHEMA.TABLES as gone) covered qualified references but not
+  unqualified ones. Cause: the multi-candidate path `#disambiguateAcrossSources`
+  emitted `PHYSICAL_COLUMN_NOT_FOUND` whenever no *present* (metadata-collected)
+  source exposed the column, ignoring whether a candidate source had no collected
+  metadata at all. Fix: when the column is found in no present source but a
+  candidate physical source has no collected metadata (absent or uncollected), the
+  reference is now classified as `PHYSICAL_METADATA_NOT_FOUND` (WARNING) and
+  attributed to that source — the column may legitimately belong to the gone
+  table, exactly as the qualified case already behaves. The absent-vs-uncollected
+  distinction stays with STEP 3 (INFORMATION_SCHEMA.TABLES): a genuinely gone
+  source is published, a present-but-uncollected source (real coverage gap) still
+  FAILs. No over-suppression: when every source is present with metadata, a missing
+  column is still an ERROR (`PHYSICAL_COLUMN_NOT_FOUND`), and the `PHYSICAL_AMBIGUOUS`
+  path (column in >1 present source) is unchanged. Test: `test_v1_5_0_064.js`.
+  Engine change: bundle rebuilt (`release_manifest.json` sha256 / size_bytes
+  updated); redeploy the UDF bundle to GCS.
+
 - Moved the collection/analysis scope filters in `03_run_daily_lineage_pipeline.sql`
   from `[B] BEHAVIOR OPTIONS` to `[A] REQUIRED per deployment / region`:
   `registry_exclude_object_patterns` / `registry_exclude_dataset_patterns` and
