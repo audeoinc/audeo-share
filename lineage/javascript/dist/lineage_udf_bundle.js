@@ -4059,7 +4059,10 @@ class ColumnResolver {
     for (const source of scope.sources) {
       if (source.source_type === "UNNEST" && source.expression) {
         this.#collectFromAst(source.expression, {
-          clause_type: source.source_role === "JOIN" ? "JOIN_UNNEST" : "FROM_UNNEST"
+          clause_type: source.source_role === "JOIN" ? "JOIN_UNNEST" : "FROM_UNNEST",
+          // 配列引数を保持するUNNESTソース自身。UNNESTの配列式は自分自身の
+          // 要素を参照できない(循環)ため、非修飾名の候補から除外する。
+          unnest_owner_source_id: source.source_id
         }, scope, sourceResolution, result);
       }
     }
@@ -4226,7 +4229,8 @@ class ColumnResolver {
      */
     const unnestValueSource = this.#findUnnestValueSource(
       scope.scope_id,
-      columnName
+      columnName,
+      context.unnest_owner_source_id ?? null
     );
 
     if (unnestValueSource) {
@@ -4242,7 +4246,8 @@ class ColumnResolver {
     const candidateSources = this.#findUnqualifiedCandidates(
       sourceResolution,
       scope.scope_id,
-      columnName
+      columnName,
+      context.unnest_owner_source_id ?? null
     );
 
     /*
@@ -4440,11 +4445,15 @@ class ColumnResolver {
    * scope連鎖の中から、別名が columnName に一致する UNNEST ソースを探す。
    * 一致が1つだけのときにその要素値参照として解決する(複数なら曖昧)。
    */
-  #findUnnestValueSource(startScopeId, columnName) {
+  #findUnnestValueSource(startScopeId, columnName, excludeSourceId = null) {
     let currentScope = this.scopeById.get(startScopeId);
 
     while (currentScope) {
       const matches = currentScope.sources.filter((source) => {
+        if (source.source_id === excludeSourceId) {
+          return false;
+        }
+
         return source.source_type === "UNNEST" &&
           (this.#normalizeName(source.source_alias) === columnName ||
            this.#normalizeName(source.offset_alias) === columnName);
@@ -4464,11 +4473,18 @@ class ColumnResolver {
     return null;
   }
 
-  #findUnqualifiedCandidates(sourceResolution, startScopeId, columnName) {
+  #findUnqualifiedCandidates(sourceResolution, startScopeId, columnName, excludeSourceId = null) {
     let currentScope = this.scopeById.get(startScopeId);
 
     while (currentScope) {
       const candidates = currentScope.sources.filter((source) => {
+        // UNNESTの配列引数は自分自身の要素を参照できない。所有UNNESTソースを
+        // 候補から除くことで、先行UNNESTが1つだけなら物理側の相関UNNEST解決
+        // (要素フィールド参照)へ正しく委譲できる。
+        if (source.source_id === excludeSourceId) {
+          return false;
+        }
+
         const knownColumns = this.#getKnownOutputColumns(source);
 
         if (knownColumns === null) {

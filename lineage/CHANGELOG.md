@@ -1,5 +1,29 @@
 # 1.5.0-032
 
+- Fixed a false `PHYSICAL_COLUMN_NOT_FOUND` for an unqualified array argument in a
+  correlated `UNNEST` join, e.g. `FROM t AS a, UNNEST(col1) AS b LEFT JOIN
+  UNNEST(col2) AS c` where `col2` is a struct field of `col1`'s element (i.e.
+  `b.col2`). Symptom: the unqualified `UNNEST(col2)` reported
+  `PHYSICAL_COLUMN_NOT_FOUND` for `COL2` (analysis → COMPLETED_WITH_ERRORS), while
+  the qualified form `UNNEST(b.col2)` did not. Cause: the reference `col2` is the
+  array argument of the third `UNNEST` source `c`, and the candidate set for the
+  unqualified name included `c` itself. The physical resolver only treats an
+  unqualified name as a preceding `UNNEST`'s element field when exactly one `UNNEST`
+  candidate remains (physical_column_resolver.js), but here two were present (`b`
+  and the self source `c`), so it fell through to `PHYSICAL_COLUMN_NOT_FOUND`. An
+  `UNNEST` array expression can never reference its own element (that would be
+  circular). Fix: the column resolver now threads the owning `UNNEST` source id into
+  the array-argument reference context and excludes that owning source from the
+  unqualified-candidate search (both the value-alias and the general candidate
+  lookups). With the self source removed, a single preceding `UNNEST` (`b`) remains
+  and the existing correlated-`UNNEST` element-field resolution applies, matching the
+  qualified form (the unnested value stays `PARTIALLY_RESOLVED`, a warning, not an
+  error). Genuine ambiguity is preserved: with two or more preceding `UNNEST`s the
+  unqualified field is still unresolved (no silent guess). Covered by
+  `test/test_v1_5_0_063.js` (unqualified vs qualified parity, the two-preceding-UNNEST
+  ambiguity guard, and a top-level-array-column control). Engine change: bundle
+  rebuilt (`release_manifest.json` sha256 / size_bytes updated).
+
 - Fixed a false `PHYSICAL_COLUMN_NOT_FOUND` when an `UNNEST` array argument inside
   a correlated subquery references an outer `SELECT` alias and the subquery has two
   or more `UNNEST` sources. Symptom: a view like
