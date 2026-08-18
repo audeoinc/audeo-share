@@ -4245,6 +4245,48 @@ class ColumnResolver {
       columnName
     );
 
+    /*
+     * UNNESTの配列引数(FROM/JOINのUNNEST(...)の中の非修飾名)が、外側Queryの
+     * SELECT出力エイリアスを指す相関参照のケース。
+     *   SELECT ARRAY_AGG(col) AS arr ... GROUP BY ALL
+     *   HAVING EXISTS (SELECT 1 FROM UNNEST(arr) AS a INNER JOIN UNNEST([...]) AS b ON a=b)
+     * ここで `arr` は外側の `ARRAY_AGG(col) AS arr` への参照。ローカルScopeには
+     * 列集合不明のUNNESTソース(a,b等)しか無いため、これらが総当り候補になり、
+     * 単一なら誤ってそのUNNESTへ、複数ならAMBIGUOUS→PHYSICAL_COLUMN_NOT_FOUND
+     * になっていた。ローカルに確定一致(既知列を公開するCTE/サブクエリ)が無い
+     * 場合に限り、祖先Scopeの一意な出力エイリアスへSELECT_ALIAS_RESOLVEDとして
+     * 解決する(既知のローカル列があればそちらが優先=内側スコープ勝ち)。
+     */
+    const isUnnestArrayArgument =
+      context.clause_type === "FROM_UNNEST" ||
+      context.clause_type === "JOIN_UNNEST";
+
+    if (isUnnestArrayArgument) {
+      const hasKnownLocalMatch = candidateSources.some((candidate) => {
+        const knownColumns = this.#getKnownOutputColumns(candidate);
+
+        return knownColumns !== null && knownColumns.includes(columnName);
+      });
+
+      if (!hasKnownLocalMatch) {
+        const correlatedAlias = this.#findCorrelatedOutputAlias(
+          scope,
+          columnName
+        );
+
+        if (correlatedAlias) {
+          return this.#createReferenceResult(node, context, scope, {
+            qualifier: null,
+            columnName,
+            status: "SELECT_ALIAS_RESOLVED",
+            source: null,
+            candidateSourceIds: [],
+            outputAliasSelectItemSeq: correlatedAlias.select_item_seq
+          });
+        }
+      }
+    }
+
     if (candidateSources.length === 0) {
       return this.#createReferenceResult(node, context, scope, {
         qualifier: null,
@@ -4346,6 +4388,45 @@ class ColumnResolver {
     });
 
     return matches.length === 1 ? matches[0] : null;
+  }
+
+  /**
+   * 相関参照として、祖先QueryのSELECT出力エイリアスを親方向に探す。
+   *
+   * UNNESTの配列引数など、ローカルScopeで確定解決できない非修飾名が、
+   * 外側Queryで定義した出力エイリアス(例: ARRAY_AGG(col) AS arr)を指す
+   * ケースに用いる。親Scopeから順に辿り、出力エイリアスが一意に一致する
+   * 最初のScopeのSELECT項目を返す。複数一致するScopeに当たった時点で
+   * 曖昧として打ち切り(nullを返す)、隠れた曖昧性を作らない。
+   */
+  #findCorrelatedOutputAlias(scope, columnName) {
+    let currentScope = this.scopeById.get(scope.parent_scope_id);
+
+    while (currentScope) {
+      const queryAst = this.queryByScopeId.get(currentScope.scope_id);
+
+      if (queryAst) {
+        const matches = (queryAst.select || []).filter((selectItem) => {
+          if (selectItem.wildcard_type) {
+            return false;
+          }
+
+          return this.#normalizeName(selectItem.output_alias) === columnName;
+        });
+
+        if (matches.length === 1) {
+          return matches[0];
+        }
+
+        if (matches.length > 1) {
+          return null;
+        }
+      }
+
+      currentScope = this.scopeById.get(currentScope.parent_scope_id);
+    }
+
+    return null;
   }
 
   /**

@@ -1,5 +1,32 @@
 # 1.5.0-032
 
+- Fixed a false `PHYSICAL_COLUMN_NOT_FOUND` when an `UNNEST` array argument inside
+  a correlated subquery references an outer `SELECT` alias and the subquery has two
+  or more `UNNEST` sources. Symptom: a view like
+  `SELECT g, ARRAY_AGG(col) AS arr FROM t GROUP BY ALL HAVING EXISTS (SELECT 1 FROM
+  UNNEST(arr) AS a INNER JOIN UNNEST(['x','y']) AS b ON a = b)` reported
+  `PHYSICAL_COLUMN_NOT_FOUND` for `arr` (analysis → COMPLETED_WITH_ERRORS), even
+  though `arr` is the outer aggregate alias, not a physical column. Cause: the
+  unqualified array-argument reference `arr` was resolved only against the
+  subquery's local sources; those `UNNEST` sources expose an unknown column set at
+  the resolver stage, so every one of them was a blanket candidate — with a single
+  `UNNEST` it silently (and wrongly) resolved to that source, and with two or more
+  it became `AMBIGUOUS`, which the physical resolver then reports as
+  `PHYSICAL_COLUMN_NOT_FOUND`. The correlated path to the outer query's `SELECT`
+  alias was never tried because output-alias visibility was limited to the
+  reference's own clause (`GROUP BY` / `HAVING` / `QUALIFY` / `ORDER BY`) and its
+  own scope, whereas the array argument sits in the subquery's `FROM_UNNEST` /
+  `JOIN_UNNEST` clause. Fix: for a `UNNEST` array-argument reference with no
+  confident local match (no local source that is known to expose the column), the
+  column resolver now walks ancestor scopes for a unique matching `SELECT` output
+  alias and resolves to it as `SELECT_ALIAS_RESOLVED` (the physical resolver passes
+  that through without a physical lookup; the aggregate expression already carries
+  the dependency lineage). A known local column still wins (inner scope precedence),
+  and non-`UNNEST` clauses are untouched, so `WHERE` / `JOIN ON` resolution is
+  unchanged. Covered by `test/test_v1_5_0_062.js` (INNER JOIN and comma forms with
+  two `UNNEST`s, plus a single-`UNNEST` regression guard). Engine change: bundle
+  rebuilt (`release_manifest.json` sha256 / size_bytes updated).
+
 - Scope the STEP 3 column-metadata scan in `03_run_daily_lineage_pipeline.sql` to
   only the source datasets that changed objects actually reference. Previously the
   has-changes gate still loaded COLUMNS / COLUMN_FIELD_PATHS for *every* source
