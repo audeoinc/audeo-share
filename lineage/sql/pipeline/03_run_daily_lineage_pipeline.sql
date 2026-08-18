@@ -133,29 +133,6 @@ DECLARE dag_service_accounts ARRAY<STRING> DEFAULT [
 DECLARE table_name_prefix STRING DEFAULT '';
 DECLARE table_name_suffix STRING DEFAULT '';
 
--- ----------------------------------------------------------------------------
--- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
--- ----------------------------------------------------------------------------
--- UDF function names. These must match the names 01 setup created in udf_dataset;
--- change them only if you deliberately renamed the functions there.
-DECLARE udf_function_name STRING DEFAULT 'analyze_lineage_json';
--- Companion fingerprint UDF (registered by 01). Used to collapse
--- structurally-identical rotating-destination JOBS (temp / ephemeral) to one
--- representative.
-DECLARE udf_fingerprint_function_name STRING DEFAULT 'fingerprint_lineage_sql';
--- Companion dynamic-SQL renderer (registered by 01, same UDF dataset). Invoked
--- dynamically (see render_call_sql) so its location stays DECLARE-configurable
--- via udf_project_id / udf_dataset -- a static function reference cannot use a
--- variable for its project/dataset.
-DECLARE udf_render_function_name STRING DEFAULT 'render_dynamic_sql';
--- Parser strictness and the maximum impact rank retained by STEP 4.
-DECLARE parser_strict_mode BOOL DEFAULT FALSE;
-DECLARE configured_max_impact_rank INT64 DEFAULT 100;
-
--- Set FALSE to skip STEP 2 (Scheduled Query / DAG generated-table collection
--- from INFORMATION_SCHEMA.JOBS) and process only Views. STEP 1/3/4 still run.
-DECLARE process_generated_tables BOOL DEFAULT TRUE;
-
 -- REGISTRY-stage (collection) exclusion. An object is NOT registered at all if
 -- its NAME matches any *_object_patterns entry OR its DATASET matches any
 -- *_dataset_patterns entry (exclusion is OR across the two dimensions). Views
@@ -195,6 +172,29 @@ DECLARE analysis_include_object_patterns ARRAY<STRING> DEFAULT [];
 DECLARE analysis_exclude_object_patterns ARRAY<STRING> DEFAULT [];
 DECLARE analysis_include_dataset_patterns ARRAY<STRING> DEFAULT [];
 DECLARE analysis_exclude_dataset_patterns ARRAY<STRING> DEFAULT [];
+
+-- ----------------------------------------------------------------------------
+-- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
+-- ----------------------------------------------------------------------------
+-- UDF function names. These must match the names 01 setup created in udf_dataset;
+-- change them only if you deliberately renamed the functions there.
+DECLARE udf_function_name STRING DEFAULT 'analyze_lineage_json';
+-- Companion fingerprint UDF (registered by 01). Used to collapse
+-- structurally-identical rotating-destination JOBS (temp / ephemeral) to one
+-- representative.
+DECLARE udf_fingerprint_function_name STRING DEFAULT 'fingerprint_lineage_sql';
+-- Companion dynamic-SQL renderer (registered by 01, same UDF dataset). Invoked
+-- dynamically (see render_call_sql) so its location stays DECLARE-configurable
+-- via udf_project_id / udf_dataset -- a static function reference cannot use a
+-- variable for its project/dataset.
+DECLARE udf_render_function_name STRING DEFAULT 'render_dynamic_sql';
+-- Parser strictness and the maximum impact rank retained by STEP 4.
+DECLARE parser_strict_mode BOOL DEFAULT FALSE;
+DECLARE configured_max_impact_rank INT64 DEFAULT 100;
+
+-- Set FALSE to skip STEP 2 (Scheduled Query / DAG generated-table collection
+-- from INFORMATION_SCHEMA.JOBS) and process only Views. STEP 1/3/4 still run.
+DECLARE process_generated_tables BOOL DEFAULT TRUE;
 
 -- Lookback window over INFORMATION_SCHEMA.JOBS. The initial window is used on
 -- the first run (empty job registry); the incremental window is used thereafter.

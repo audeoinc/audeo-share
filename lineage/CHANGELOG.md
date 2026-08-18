@@ -1,5 +1,14 @@
 # 1.5.0-032
 
+- Moved the collection/analysis scope filters in `03_run_daily_lineage_pipeline.sql`
+  from `[B] BEHAVIOR OPTIONS` to `[A] REQUIRED per deployment / region`:
+  `registry_exclude_object_patterns` / `registry_exclude_dataset_patterns` and
+  `analysis_include_object_patterns` / `analysis_exclude_object_patterns` /
+  `analysis_include_dataset_patterns` / `analysis_exclude_dataset_patterns`. These
+  determine which objects a given deployment registers and analyzes, so they belong
+  with the must-review settings. Comment blocks moved with the variables; each is
+  still declared exactly once and behavior is unchanged. SQL-only.
+
 - Applied the same `[A] REQUIRED / [B] BEHAVIOR OPTIONS / [C] DERIVED-INTERNAL`
   three-section DECLARE layout to the remaining scripts: `01_setup_lineage_environment.sql`,
   `04_validate_lineage_environment.sql`, `06_analyze_changed_objects.sql`,
