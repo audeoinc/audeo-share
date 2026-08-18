@@ -4473,15 +4473,32 @@ class ColumnResolver {
     return null;
   }
 
-  #findUnqualifiedCandidates(sourceResolution, startScopeId, columnName, excludeSourceId = null) {
+  #findUnqualifiedCandidates(sourceResolution, startScopeId, columnName, unnestOwnerSourceId = null) {
     let currentScope = this.scopeById.get(startScopeId);
+    let isStartScope = true;
+
+    /*
+     * UNNESTの配列引数の可視範囲。UNNEST(...) の引数は、同じ FROM 節で「その UNNEST
+     * より前(左)」に現れたソースと、外側スコープだけを参照できる(lateral/相関)。自分
+     * 自身の要素は参照できず、後から JOIN されるソースはまだスコープに入っていない。
+     * 所有 UNNEST の登場順(source_seq)を求め、開始スコープでは「それ以降のソース」を
+     * 候補から除く。これをしないと、後続 JOIN のソースが同名列を持つ場合(例:
+     * UNNEST(Col) と、col 列を持つ後続 CTE)に誤った AMBIGUOUS になる。外側スコープには
+     * この順序制約は課さない(相関参照は外側の全ソースを見られる)。
+     */
+    const ownerScope = this.scopeById.get(startScopeId);
+    const ownerSource = unnestOwnerSourceId !== null && ownerScope
+      ? ownerScope.sources.find((source) => source.source_id === unnestOwnerSourceId)
+      : null;
+    const ownerSeq = ownerSource ? ownerSource.source_seq : null;
 
     while (currentScope) {
       const candidates = currentScope.sources.filter((source) => {
-        // UNNESTの配列引数は自分自身の要素を参照できない。所有UNNESTソースを
-        // 候補から除くことで、先行UNNESTが1つだけなら物理側の相関UNNEST解決
-        // (要素フィールド参照)へ正しく委譲できる。
-        if (source.source_id === excludeSourceId) {
+        if (source.source_id === unnestOwnerSourceId) {
+          return false;
+        }
+
+        if (isStartScope && ownerSeq !== null && source.source_seq > ownerSeq) {
           return false;
         }
 
@@ -4498,6 +4515,7 @@ class ColumnResolver {
         return candidates;
       }
 
+      isStartScope = false;
       currentScope = this.scopeById.get(currentScope.parent_scope_id);
     }
 

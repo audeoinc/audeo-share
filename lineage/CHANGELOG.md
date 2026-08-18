@@ -1,5 +1,28 @@
 # 1.5.0-032
 
+- Fixed a false `PHYSICAL_COLUMN_AMBIGUOUS` for an `UNNEST` array argument whose
+  column name collides with a column exposed by a source joined *after* the
+  `UNNEST`. Symptom: with a CTE that has a column `col`,
+  `SELECT Col FROM d.t AS t, UNNEST(Col) AS Col INNER JOIN cte AS t2 ON Col =
+  t2.col` reported `PHYSICAL_COLUMN_AMBIGUOUS` for `Col` with candidate sources
+  `[D.T, CTE]` (COMPLETED_WITH_ERRORS), even though the argument of `UNNEST(Col)`
+  can only be the array column `Col` of the preceding `t`. Cause: the unqualified
+  candidate search considered every source in the scope, so the later-joined CTE
+  (whose `col` matches case-insensitively) was offered as a rival candidate.
+  In GoogleSQL an `UNNEST` array argument is lateral — it can reference only
+  range variables introduced earlier (to its left) in the same `FROM`, plus outer
+  scopes; sources joined after it are not yet in scope. Fix: `#findUnqualifiedCandidates`
+  now takes the owning `UNNEST` source and, in that source's own scope, drops the
+  owner itself and every source that appears after it (`source_seq` greater),
+  leaving only preceding sources (outer scopes are unrestricted for correlation).
+  No over-suppression: an argument that is genuinely ambiguous across two
+  *preceding* sources is still `PHYSICAL_COLUMN_AMBIGUOUS`, and ordinary
+  (non-`UNNEST`) column ambiguity is unchanged. Extends the earlier "an `UNNEST`
+  argument cannot reference its own element" fix to also exclude later siblings.
+  Test: `test_v1_5_0_065.js`. Engine change: bundle rebuilt
+  (`release_manifest.json` sha256 / size_bytes updated); redeploy the UDF bundle
+  to GCS.
+
 - Fixed absent-source not-found WARNINGS leaking into `lineage_diagnostic` for
   JOBS-sourced objects after the option-D metadata scoping. STEP 3 suppresses the
   diagnostics of *publishable* objects (exact COMPLETED, or COMPLETED_WITH_WARNINGS
