@@ -43,11 +43,15 @@ BEGIN
   -- ==========================================================================
   -- Runtime environment settings
   -- ==========================================================================
-  DECLARE target_project_id STRING DEFAULT 'project_id';
+  -- Single source of truth for the GCP project (target and UDFs share one
+  -- project). Set it once here; the role-specific *_project_id variables default
+  -- to it. Override a role's line only if it lives in a separate project.
+  DECLARE default_project_id STRING DEFAULT 'project_id';
+  DECLARE target_project_id STRING DEFAULT default_project_id;
   DECLARE target_dataset STRING DEFAULT 'dataset';
   DECLARE target_view_name STRING DEFAULT 'v_customer_sales_cost_sample';
   DECLARE job_region STRING DEFAULT 'asia-northeast1';
-  DECLARE udf_project_id STRING DEFAULT 'project_id';
+  DECLARE udf_project_id STRING DEFAULT default_project_id;
   DECLARE udf_dataset STRING DEFAULT 'dataset';
   DECLARE udf_function_name STRING DEFAULT 'analyze_lineage_json';
   DECLARE parser_strict_mode BOOL DEFAULT FALSE;

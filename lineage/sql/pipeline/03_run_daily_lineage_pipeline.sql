@@ -44,9 +44,16 @@ BEGIN
 -- region-qualified INFORMATION_SCHEMA identifiers (`region-<job_region>`), which
 -- cannot be parameterized. Set the region only at the @@location line above.
 DECLARE job_region STRING DEFAULT @@location;
-DECLARE repository_project_id STRING DEFAULT 'project_id';
+-- Single source of truth for the GCP project. The repository, the analyzed
+-- Views (target), and the UDFs all live in one project, so set it here once; the
+-- role-specific *_project_id variables below default to it. Override an
+-- individual role's line only in the rare case its objects live in a separate
+-- project. (Physical source tables can span projects and are configured
+-- separately via source_project_filters below.)
+DECLARE default_project_id STRING DEFAULT 'project_id';
+DECLARE repository_project_id STRING DEFAULT default_project_id;
 DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
-DECLARE target_project_id STRING DEFAULT 'project_id';
+DECLARE target_project_id STRING DEFAULT default_project_id;
 -- Target datasets holding the Views to analyze (single target project). These
 -- are NOT listed explicitly: they are resolved at runtime by scanning the target
 -- project's datasets in job_region (INFORMATION_SCHEMA.SCHEMATA) and filtering by
@@ -95,7 +102,7 @@ DECLARE source_project_filters
       CAST([] AS ARRAY<STRING>) AS dataset_exclude_patterns
     )
   ];
-DECLARE udf_project_id STRING DEFAULT 'project_id';
+DECLARE udf_project_id STRING DEFAULT default_project_id;
 DECLARE udf_dataset STRING DEFAULT 'dataset';
 DECLARE udf_function_name STRING DEFAULT 'analyze_lineage_json';
 -- Companion fingerprint UDF (registered by 01). Used to collapse

@@ -46,16 +46,23 @@
 SET @@location = 'asia-northeast1';
 
 BEGIN
+  -- Single source of truth for the GCP project. The views (target) and the
+  -- lineage repository share one project, so set it here once; their
+  -- *_project_id variables default to it. The audit-log sink can legitimately
+  -- live in a separate project, so audit_project_id also defaults to it but is
+  -- meant to be overridden when the sink is elsewhere.
+  DECLARE default_project_id STRING DEFAULT 'project_id';
+
   -- Audit log sink location (the *_data_access table).
-  DECLARE audit_project_id STRING DEFAULT 'project_id';
+  DECLARE audit_project_id STRING DEFAULT default_project_id;
   DECLARE audit_dataset STRING DEFAULT 'audit_logs';
   DECLARE audit_table STRING DEFAULT 'cloudaudit_googleapis_com_data_access';
 
   -- Project the views live in (filters referencedViews to these objects).
-  DECLARE target_project_id STRING DEFAULT 'project_id';
+  DECLARE target_project_id STRING DEFAULT default_project_id;
 
   -- Lineage repository location (holds the definition registry).
-  DECLARE repository_project_id STRING DEFAULT 'project_id';
+  DECLARE repository_project_id STRING DEFAULT default_project_id;
   DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
   -- Physical registry table name: keep prefix/suffix in step with 01 setup.
   DECLARE table_name_prefix STRING DEFAULT '';

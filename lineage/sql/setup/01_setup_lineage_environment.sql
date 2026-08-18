@@ -20,13 +20,18 @@ SET @@location = 'asia-northeast1';
 -- Prerequisite:
 --   Upload lineage_udf_bundle.js to the configured GCS URI before execution.
 -- ============================================================================
-DECLARE bootstrap_repository_project_id STRING DEFAULT 'project_id';
+-- Single source of truth for the GCP project. The repository, the UDFs, and the
+-- smoke-test target all live in one project, so set it here once; the
+-- role-specific bootstrap_*_project_id variables below default to it. Override an
+-- individual role's line only if its objects live in a separate project.
+DECLARE bootstrap_default_project_id STRING DEFAULT 'project_id';
+DECLARE bootstrap_repository_project_id STRING DEFAULT bootstrap_default_project_id;
 DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository';
 -- Derived from `SET @@location` at the top (single source of truth): the
 -- repository lives in the location this setup runs in. Set the region only there.
 DECLARE bootstrap_repository_location STRING DEFAULT @@location;
 
-DECLARE bootstrap_udf_project_id STRING DEFAULT 'project_id';
+DECLARE bootstrap_udf_project_id STRING DEFAULT bootstrap_default_project_id;
 DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';
 DECLARE bootstrap_udf_function_name STRING DEFAULT 'analyze_lineage_json';
 -- Companion scalar UDF that returns a SQL structural fingerprint. Used by
@@ -44,7 +49,7 @@ DECLARE bootstrap_udf_library_uri STRING DEFAULT
 -- Target project/dataset are used only by the UDF smoke test below (to build a
 -- representative physical-column identity). The pipeline's own scan scope is set
 -- in 03_run_daily_lineage_pipeline.sql.
-DECLARE bootstrap_target_project_id STRING DEFAULT 'project_id';
+DECLARE bootstrap_target_project_id STRING DEFAULT bootstrap_default_project_id;
 DECLARE bootstrap_target_datasets ARRAY<STRING> DEFAULT ['dataset'];
 
 -- Smoke-test parser options (mirror 03's parser_strict_mode / compact_export).

@@ -1,5 +1,24 @@
 # 1.5.0-032
 
+- Made the GCP project a single point of configuration in every pipeline/maintenance
+  script. Each script previously repeated `DEFAULT 'project_id'` for each role
+  (repository / target / UDF, plus audit in 08), even though those roles always share
+  one project in this deployment. Each script now declares one master
+  `default_project_id` (`bootstrap_default_project_id` in the `bootstrap_`-prefixed
+  01 / 04) and the role-specific `*_project_id` variables `DEFAULT` to it, mirroring
+  the `@@location` → `job_region` single-source pattern. Set the project once at the
+  master line; a role that ever needs a different project can still override its own
+  line (kept for that reason). The master is declared before the roles that reference
+  it (BigQuery `DEFAULT` may reference earlier-declared variables). In 03 the master
+  is named `default_project_id` specifically to avoid shadowing the `project_id`
+  column used in the source-dataset scans. `source_project_filters` in 03 is
+  unchanged: physical source tables can span multiple projects by design, so it stays
+  an explicit per-source list. In 08 `audit_project_id` also defaults to the master
+  but is documented as overridable, since the audit-log sink can live in a separate
+  project. Files: `sql/pipeline/03_*`, `sql/setup/01_*`, `sql/validation/04_*`,
+  `sql/maintenance/06_*`, `07_*`, `08_*`, and `sql/debug/debug_v_customer_primary_contact.sql`.
+  SQL-only; the engine bundle is unaffected. Not yet validated against BigQuery.
+
 - Fixed a false `PHYSICAL_COLUMN_NOT_FOUND` for an unqualified array argument in a
   correlated `UNNEST` join, e.g. `FROM t AS a, UNNEST(col1) AS b LEFT JOIN
   UNNEST(col2) AS c` where `col2` is a struct field of `col1`'s element (i.e.

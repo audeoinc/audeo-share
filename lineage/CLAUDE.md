@@ -86,6 +86,11 @@ npm test                        # build + verify:bundle + test:release を一括
   rendered_sql USING sql_template`）。これで設置場所が DECLARE 可変になる。本体変更時は
   `sql/bigquery/create_render_dynamic_sql_udf.sql` で再配備。STEP1=VIEW 収集、
   STEP2=JOBS 収集、STEP3/4=解析。region は単一の `job_region`（`@@location`）。
+  project も単一ソース：各スクリプトは `default_project_id`（01/04 は
+  `bootstrap_default_project_id`）を1つ宣言し、role 別の `*_project_id` は
+  それを `DEFAULT` する（`@@location` と同じ単一ソース方式）。03 の
+  `source_project_filters`（物理ソースは複数 project 可）と 08 の
+  `audit_project_id`（監査 sink は別 project 可）は上書き前提で残す。
   JOBS の重複除去はフィンガープリント方式（一時/ローテーション/期限付き宛先は
   代表 1 件に集約、永続宛先は宛先ごとに保持）。ephemeral 判定＝宛先が実在し、かつ
   テーブル expiration が無いもの以外。
