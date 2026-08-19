@@ -1,5 +1,21 @@
 # 1.5.0-032
 
+- Allowed `-` (hyphen) in the repository table names this system creates. The
+  name-format ASSERTs on `table_definition_registry` / `table_direct_dependency` /
+  `table_impact` / `table_diagnostic` / `table_job_registry` (in
+  `01_setup_lineage_environment.sql` and `03_run_daily_lineage_pipeline.sql`) went
+  from `^[A-Za-z0-9_]+$` to `^[A-Za-z0-9_-]+$`, so a `table_name_prefix` /
+  `table_name_suffix` containing a hyphen (e.g. `-tky`) is accepted. This is safe
+  because every reference to these tables is backtick-quoted (01 CREATE, 03/06/07/08
+  reads, all via `` `project.dataset.table` ``), matching the team's
+  backtick-mandatory rule; BigQuery permits `-` in a table name when it is always
+  quoted. Dataset names, UDF/routine names, target view names, and resolved target
+  dataset names are unchanged — they keep `^[A-Za-z0-9_]+$` because BigQuery does
+  not allow `-` in datasets or routine identifiers. Note: hyphenated ("flexible")
+  table names must always be backtick-quoted and are not supported by every BI tool
+  (e.g. some Looker Studio paths) — prefer `_` unless a hyphen is required. SQL-only;
+  the engine bundle is unaffected. Not yet validated against BigQuery.
+
 - Fixed a false `PHYSICAL_COLUMN_AMBIGUOUS` for an `UNNEST` array argument whose
   column name collides with a column exposed by a source joined *after* the
   `UNNEST`. Symptom: with a CTE that has a column `col`,

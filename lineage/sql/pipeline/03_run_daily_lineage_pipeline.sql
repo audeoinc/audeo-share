@@ -130,6 +130,9 @@ DECLARE dag_service_accounts ARRAY<STRING> DEFAULT [
 -- must be reclassified. Include any '_' separators in the prefix and suffix.
 -- Example: prefix='ope_', marker 'm_', suffix='_tky' yields
 -- ope_m_lineage_definition_registry_tky. Leave a segment empty to omit it.
+-- Allowed characters: letters, digits, '_', and '-' (every reference to these
+-- tables is backtick-quoted, so a hyphen like suffix='-tky' is safe). Dataset and
+-- UDF names still allow only letters/digits/'_' (BigQuery does not permit '-').
 DECLARE table_name_prefix STRING DEFAULT '';
 DECLARE table_name_suffix STRING DEFAULT '';
 
@@ -304,15 +307,15 @@ SET table_impact =
 SET table_diagnostic =
   table_name_prefix || 't_' || 'lineage_diagnostic' || table_name_suffix;
 
-ASSERT REGEXP_CONTAINS(table_definition_registry, r'^[A-Za-z0-9_]+$')
+ASSERT REGEXP_CONTAINS(table_definition_registry, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_definition_registry name.';
-ASSERT REGEXP_CONTAINS(table_direct_dependency, r'^[A-Za-z0-9_]+$')
+ASSERT REGEXP_CONTAINS(table_direct_dependency, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_direct_dependency name.';
-ASSERT REGEXP_CONTAINS(table_impact, r'^[A-Za-z0-9_]+$')
+ASSERT REGEXP_CONTAINS(table_impact, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_impact name.';
-ASSERT REGEXP_CONTAINS(table_diagnostic, r'^[A-Za-z0-9_]+$')
+ASSERT REGEXP_CONTAINS(table_diagnostic, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_diagnostic name.';
-ASSERT REGEXP_CONTAINS(table_job_registry, r'^[A-Za-z0-9_]+$')
+ASSERT REGEXP_CONTAINS(table_job_registry, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_job_registry name.';
 
 SET repo_tables = STRUCT(

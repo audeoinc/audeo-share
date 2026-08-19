@@ -49,7 +49,9 @@ DECLARE bootstrap_udf_library_uri STRING DEFAULT
 -- region tag like suffix='_tky'); the master/transaction marker ('m_' / 't_') is
 -- an inline literal in each SET line (edit it only to reclassify a table).
 -- Include any '_' separators in the prefix and suffix; leave a segment empty to
--- omit it.
+-- omit it. Allowed characters: letters, digits, '_', and '-' (every reference to
+-- these tables is backtick-quoted, so a hyphen like suffix='-tky' is safe).
+-- Dataset and UDF names still allow only letters/digits/'_' (no '-').
 DECLARE bootstrap_table_name_prefix STRING DEFAULT '';
 DECLARE bootstrap_table_name_suffix STRING DEFAULT '';
 
@@ -118,15 +120,15 @@ SET table_diagnostic =
   bootstrap_table_name_prefix || 't_' || 'lineage_diagnostic'
     || bootstrap_table_name_suffix;
 
-ASSERT REGEXP_CONTAINS(table_definition_registry, r'^[A-Za-z0-9_]+$')
+ASSERT REGEXP_CONTAINS(table_definition_registry, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_definition_registry name.';
-ASSERT REGEXP_CONTAINS(table_direct_dependency, r'^[A-Za-z0-9_]+$')
+ASSERT REGEXP_CONTAINS(table_direct_dependency, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_direct_dependency name.';
-ASSERT REGEXP_CONTAINS(table_impact, r'^[A-Za-z0-9_]+$')
+ASSERT REGEXP_CONTAINS(table_impact, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_impact name.';
-ASSERT REGEXP_CONTAINS(table_diagnostic, r'^[A-Za-z0-9_]+$')
+ASSERT REGEXP_CONTAINS(table_diagnostic, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_diagnostic name.';
-ASSERT REGEXP_CONTAINS(table_job_registry, r'^[A-Za-z0-9_]+$')
+ASSERT REGEXP_CONTAINS(table_job_registry, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_job_registry name.';
 
 SET repository_dataset_full_name = FORMAT(
