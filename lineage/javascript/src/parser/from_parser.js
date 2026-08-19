@@ -147,6 +147,18 @@ class FromParser {
     }
 
     /*
+     * FROM 位置で名前の直後に "(" が来る場合、これはテーブル値関数(TVF)呼び出し
+     * である(例: EXTERNAL_QUERY('connection', '''SELECT ...''') AS a、
+     * dataset.my_tvf(x) など)。EXTERNAL_QUERY のようなフェデレーテッドクエリや
+     * TVF の出力は BigQuery 物理テーブルではなく、その列は物理系統を持たない。
+     * 中身は解析せず、対応する ")" まで読み飛ばして不透明ソース(TABLE_FUNCTION)
+     * として扱う。これがないと JOIN 解析器が "(" を見て「JOIN を期待」で失敗する。
+     */
+    if (this.reader.matches("(", false)) {
+      return this.#parseTableFunctionSource(startToken, nameParts);
+    }
+
+    /*
      * TABLESAMPLE SYSTEM (n PERCENT) はサンプリング指定で列系統に影響しない。
      * 別名の前後どちらにも書けるため、両位置で読み飛ばす。
      */
@@ -157,6 +169,35 @@ class FromParser {
 
     return {
       source_type: "TABLE",
+      name: nameParts.join("."),
+      name_parts: nameParts,
+      alias: aliasInfo.alias,
+      alias_type: aliasInfo.alias_type,
+      start_token_seq: startToken.token_seq,
+      end_token_seq: endToken.token_seq
+    };
+  }
+
+  /**
+   * name(...) 形式のテーブル値関数(EXTERNAL_QUERY など)を不透明ソースとして
+   * 解析する。括弧内部は解析対象にせず、対応する ")" まで読み飛ばし、任意の
+   * 別名を取り込む。TABLE_FUNCTION ソースは派生ソース(CTE/サブクエリ)と同様、
+   * 物理列を持たない。列参照は解決されるが系統も診断も生まない。
+   */
+  #parseTableFunctionSource(startToken, nameParts) {
+    const openToken = this.#consumeExpected("(", false);
+    const closeToken = this.#findMatchingCloseParenthesis(openToken);
+
+    this.reader.moveToTokenSeq(closeToken.token_seq);
+    this.reader.consume();
+
+    this.#skipTableSampleClause();
+    const aliasInfo = this.#parseAlias();
+    this.#skipTableSampleClause();
+    const endToken = aliasInfo.alias_token || closeToken;
+
+    return {
+      source_type: "TABLE_FUNCTION",
       name: nameParts.join("."),
       name_parts: nameParts,
       alias: aliasInfo.alias,

@@ -205,6 +205,22 @@ class PhysicalColumnResolver {
       });
     }
 
+    if (reference.source_type === "TABLE_FUNCTION") {
+      /*
+       * TABLE_FUNCTION は EXTERNAL_QUERY など FROM 位置のテーブル値関数。外部/
+       * フェデレーテッド出力で BigQuery 物理列にマップできない。CTE/サブクエリの
+       * ように追える子スコープも無いため、DERIVED_SOURCE_RESOLVED にすると
+       * 「解決したが上流を辿れない」= PARTIALLY_RESOLVED(WARNING)になってしまう。
+       * 外部ソース列は正当な終端値なので、専用の EXTERNAL_SOURCE_RESOLVED で
+       * 定数同様の解決済み終端として扱う(系統エッジも診断も生まない)。
+       */
+      return this.#createPhysicalReference(reference, {
+        physicalStatus: "EXTERNAL_SOURCE_RESOLVED",
+        sourceId: reference.source_id,
+        physicalColumns: []
+      });
+    }
+
     if (reference.source_type === "UNNEST") {
       return this.#resolveCorrelatedUnnestReference(reference, context);
     }
@@ -680,7 +696,8 @@ class PhysicalColumnResolver {
      * (相関参照など別スコープ由来の可能性を潰さない)。
      */
     if (resolved.physical_resolution_status === "PHYSICAL_RESOLVED" ||
-        resolved.physical_resolution_status === "DERIVED_SOURCE_RESOLVED") {
+        resolved.physical_resolution_status === "DERIVED_SOURCE_RESOLVED" ||
+        resolved.physical_resolution_status === "EXTERNAL_SOURCE_RESOLVED") {
       return resolved;
     }
 
@@ -697,11 +714,17 @@ class PhysicalColumnResolver {
     const derivedMatches = [];
     const unnestCandidates = [];
     const metadatalessPhysicalSources = [];
+    const externalSources = [];
 
     for (const sourceId of candidateSourceIds) {
       const source = this.sourceById.get(sourceId);
 
       if (!source) {
+        continue;
+      }
+
+      if (source.source_type === "TABLE_FUNCTION") {
+        externalSources.push(source);
         continue;
       }
 
@@ -779,6 +802,21 @@ class PhysicalColumnResolver {
       return this.#createPhysicalReference(reference, {
         physicalStatus: "PHYSICAL_METADATA_NOT_FOUND",
         sourceId: metadatalessPhysicalSources[0].source_id,
+        physicalColumns: []
+      });
+    }
+
+    /*
+     * 修飾なし列がどの物理/派生ソースにも無く、候補に TABLE_FUNCTION
+     * (EXTERNAL_QUERY など)がある場合。外部ソースは列集合が不明なので、その列は
+     * 外部由来である可能性があり、PHYSICAL_COLUMN_NOT_FOUND(ERROR)と断定できない。
+     * 外部終端(EXTERNAL_SOURCE_RESOLVED)として帰属させる。最後の分岐なので、
+     * 実テーブル/派生に一致する列はそちらが優先され、誤った AMBIGUOUS も起こさない。
+     */
+    if (totalMatches === 0 && externalSources.length > 0) {
+      return this.#createPhysicalReference(reference, {
+        physicalStatus: "EXTERNAL_SOURCE_RESOLVED",
+        sourceId: externalSources[0].source_id,
         physicalColumns: []
       });
     }

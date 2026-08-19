@@ -111,11 +111,16 @@ npm test                        # build + verify:bundle + test:release を一括
   経由で解析 UDF の options に `script_variables` を渡し、エンジンは「非修飾かつ列解決
   不可」な識別子が変数集合にあれば opaque 値扱い（列優先維持・修飾は対象外）。位置
   パラメータ `?` と名前付き `@param` はレキサが PARAMETER トークンとして処理。
+  **FROM のテーブル値関数**：`FROM EXTERNAL_QUERY(...) AS a` など FROM 位置で名前
+  直後に `(` が来る呼び出しは `TABLE_FUNCTION` ソース（不透明）として解析（括弧内は
+  解析せず読み飛ばし・別名任意）。外部/フェデレーテッド出力は物理列を持たないため、
+  列参照は `EXTERNAL_SOURCE_RESOLVED`（定数同様の終端・系統も診断もなし）で解決。
+  実テーブルとの JOIN では実列優先・誤 AMBIGUOUS なし。
 
 ## 7. 現在地
 
-- バンドル: `sha256 = a88125ed4bad94384d358e5f943012077ad34b8ece9bcc22148dcb97090e8b42`、`451478` bytes
-- `test:release` 41 本 PASS / ゴールデン 48 ケース PASS
+- バンドル: `sha256 = ff87a8522156f3b116c20ed14635c0d45eb770a8f223106acc50c6f14fb6e1ea`、`455709` bytes
+- `test:release` 46 本 PASS / ゴールデン 48 ケース PASS
 - 直近の修正: 03 STEP 3 を**データセット単位のループ**へ変更し、UDF チャンク分割を撤去。
   リージョン全体を1パスで解析すると V8 ヒープ蓄積で "UDF out of memory" になり、行数チャンクでも
   大オブジェクトが偏ると OOM が続いた。実運用で「1データセットずつなら通る」ことを確認済みのため、

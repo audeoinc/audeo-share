@@ -1,5 +1,27 @@
 # 1.5.0-032
 
+- Parsed a FROM-position table-valued function call (e.g. `EXTERNAL_QUERY`) as an
+  opaque source instead of failing. A job SQL of the form
+  `FROM EXTERNAL_QUERY('conn', '''SELECT ...''') AS a` produced "Source discovery
+  did not complete" / FromParser "JOIN was expected but found `(`": the FROM
+  source grammar only knew ordinary tables, UNNEST, and subqueries, so it read
+  `EXTERNAL_QUERY` as a table name and then hit the `(` in the JOIN loop. The
+  parser now recognizes a name (optionally dotted, `dataset.my_tvf(...)`) directly
+  followed by `(` as a table-function call: it skips the balanced parentheses
+  without analyzing their contents, takes an optional alias (the `AS a` may be
+  absent), and emits a new `TABLE_FUNCTION` source. Federated / TVF output is not a
+  BigQuery physical table and its columns have no physical lineage, so the resolver
+  treats a `TABLE_FUNCTION` column as a resolved external terminal
+  (`EXTERNAL_SOURCE_RESOLVED`): a qualified `a.col`, a single-source unqualified
+  reference, and — as a last resort only, so a real table in the same join always
+  wins and no false AMBIGUOUS arises — an unqualified reference with no other
+  match, all resolve to it with no lineage edge and no diagnostic (unlike
+  `DERIVED_SOURCE_RESOLVED`, which would flag it PARTIALLY_RESOLVED for having no
+  traceable upstream). A real table joined with `EXTERNAL_QUERY` still produces its
+  own lineage normally. Engine change: rebuilt the bundle
+  (`sha256 ff87a852…`, 455709 bytes). Test: `test_v1_5_0_068`. Not yet validated
+  against BigQuery.
+
 - Added `sql/maintenance/09_unanalyzed_object_definitions.sql`, a read-only,
   on-demand report that lists the SQL of objects that CURRENTLY EXIST but are not
   covered by lineage analysis, so an operator can see what is missing from the
