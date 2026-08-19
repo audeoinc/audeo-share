@@ -1,5 +1,28 @@
 # 1.5.0-032
 
+- Added a `script_variables` analysis option so a BigQuery multi-statement script's
+  child statement no longer false-fails on the parent's variables. A script like
+  `DECLARE aaa STRING; SET aaa='20250818'; SELECT * FROM t WHERE dt = aaa` records
+  the parent as statement_type=SCRIPT and the child `SELECT ... WHERE dt = aaa` as
+  its own statement_type=SELECT job — and the child's stored query text has no
+  DECLARE/SET context, so `aaa` appears as a bare identifier indistinguishable from
+  a column and resolved to PHYSICAL_COLUMN_NOT_FOUND (ERROR → FAILED, retried).
+  Unlike `@param` / `?`, a script variable has no syntactic marker, so the fix uses
+  context: `analyzeLineageForBigQuery`'s options now accept
+  `script_variables: [...]` (the parent script's declared variable names). In the
+  physical resolver, an unqualified reference that could not be resolved as a column
+  (PHYSICAL_COLUMN_NOT_FOUND / UNRESOLVED_COLUMN) whose name is in that set is
+  reclassified as `SCRIPT_VARIABLE_RESOLVED` — an opaque value with no lineage and
+  no diagnostic. Column precedence is preserved: a name that DOES resolve to a real
+  column stays a column (BigQuery resolves a column over a same-named variable), and
+  an ambiguous-but-real column stays ambiguous; a qualified `t.aaa` is never treated
+  as a variable; and a not-found name that is not in the set still errors (no
+  over-suppression). Empty/absent `script_variables` changes nothing. This is the
+  engine half; the pipeline half (03 STEP 2 collecting the parent SCRIPT's DECLAREs
+  by `parent_job_id` and passing them per object) follows separately. Test:
+  `test_v1_5_0_067.js`. Engine change: bundle rebuilt (`release_manifest.json`
+  sha256 / size_bytes updated); redeploy the UDF bundle to GCS.
+
 - Recognized positional query parameters (`?`) so parameterized DAG SQL analyzes
   cleanly. Parameterized queries (run by DAGs / clients) keep their `@name` and
   `?` placeholders in the stored SQL text (JOBS.query); the parameter *values* are

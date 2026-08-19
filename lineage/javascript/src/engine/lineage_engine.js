@@ -30,6 +30,13 @@ class LineageEngine {
 
     this.physicalColumns = physicalColumns;
     this.strictMode = options.strictMode !== false;
+    // 親スクリプト（BigQuery multi-statement script）で DECLARE / SET された変数名。
+    // 子ステートメントの query テキストには DECLARE 文脈が無いため、変数 aaa は
+    // 修飾なし識別子として現れて列と区別がつかない。列として解決できなかった
+    // 非修飾識別子がこの集合にあれば、値（系統なし）として扱い誤 not-found を防ぐ。
+    this.scriptVariables = Array.isArray(options.scriptVariables)
+      ? options.scriptVariables
+      : [];
   }
 
   /**
@@ -76,7 +83,8 @@ class LineageEngine {
       new OutputColumnResolver(state.tokens).resolve(state.context);
 
       state.failedStage = "PHYSICAL_COLUMN_RESOLVER";
-      new PhysicalColumnResolver(this.physicalColumns).resolve(state.context);
+      new PhysicalColumnResolver(this.physicalColumns, this.scriptVariables)
+        .resolve(state.context);
 
       state.failedStage = "LINEAGE_RESOLVER";
       new LineageResolver().resolve(state.context);
@@ -523,7 +531,10 @@ function analyzeLineageForBigQuery(
 
   const engine = new LineageEngine({
     physicalColumns,
-    strictMode: options.strict_mode !== false
+    strictMode: options.strict_mode !== false,
+    scriptVariables: Array.isArray(options.script_variables)
+      ? options.script_variables
+      : []
   });
 
   const engineResult = engine.analyze(sqlText, {

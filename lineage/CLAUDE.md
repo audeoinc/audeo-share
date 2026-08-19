@@ -107,7 +107,7 @@ npm test                        # build + verify:bundle + test:release を一括
 
 ## 7. 現在地
 
-- バンドル: `sha256 = fca83cb2cfa21cc59371c520caf4788e941c5c4dca6987cb6d1fe8cd72d525d5`、`448700` bytes
+- バンドル: `sha256 = a88125ed4bad94384d358e5f943012077ad34b8ece9bcc22148dcb97090e8b42`、`451478` bytes
 - `test:release` 41 本 PASS / ゴールデン 48 ケース PASS
 - 直近の修正: 03 STEP 3 を**データセット単位のループ**へ変更し、UDF チャンク分割を撤去。
   リージョン全体を1パスで解析すると V8 ヒープ蓄積で "UDF out of memory" になり、行数チャンクでも

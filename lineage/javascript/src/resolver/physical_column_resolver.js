@@ -30,7 +30,7 @@ class PhysicalColumnResolver {
    *
    * table_nameへ`project.dataset.sales`を直接渡す形式にも対応する。
    */
-  constructor(physicalColumns) {
+  constructor(physicalColumns, scriptVariables = []) {
     if (!Array.isArray(physicalColumns)) {
       throw new TypeError(
         "PhysicalColumnResolver: physicalColumns must be an array."
@@ -43,6 +43,13 @@ class PhysicalColumnResolver {
     this.outputColumnsByScopeId = new Map();
     this.nextPhysicalReferenceId = 1;
     this.nextExpandedOutputColumnId = 1;
+    // 親スクリプトの DECLARE / SET 変数名（正規化済み集合）。修飾なし識別子が
+    // 列として解決できなかったときのフォールバック判定に使う。
+    this.scriptVariables = new Set(
+      (Array.isArray(scriptVariables) ? scriptVariables : [])
+        .filter((name) => typeof name === "string")
+        .map((name) => this.#normalizeName(name))
+    );
   }
 
   /**
@@ -59,7 +66,10 @@ class PhysicalColumnResolver {
     this.#buildResolutionIndexes(context);
 
     const columnReferences = context.column_resolution.column_references.map(
-      (reference) => this.#resolveColumnReference(reference, context)
+      (reference) => this.#applyScriptVariableFallback(
+        this.#resolveColumnReference(reference, context),
+        reference
+      )
     );
     const unpivotGeneratedColumns =
       this.#resolveUnpivotGeneratedColumns(context);
@@ -239,6 +249,45 @@ class PhysicalColumnResolver {
     return this.#createPhysicalReference(reference, {
       physicalStatus: reference.resolution_status,
       sourceId: reference.source_id,
+      physicalColumns: []
+    });
+  }
+
+  /*
+   * スクリプト変数フォールバック。BigQuery の multi-statement script では、子
+   * ステートメント（JOBS に SELECT / CTAS として記録される 1 文）の query に
+   * DECLARE / SET が含まれないため、変数 aaa は修飾なし識別子として現れ、列と
+   * 区別できない。列として解決できなかった（PHYSICAL_COLUMN_NOT_FOUND /
+   * UNRESOLVED_COLUMN）修飾なし参照の名前が、親スクリプトで宣言された変数集合
+   * (scriptVariables) にあれば、値（系統を持たない）として解決済みにする。
+   *
+   * 列優先は維持する：列として解決できた参照や、複数ソースに実在する AMBIGUOUS は
+   * そのまま（BigQuery でも同名なら列が変数に優先する）。修飾あり（table.aaa）は
+   * 列 / STRUCT フィールドなので対象外。scriptVariables が空なら何もしない。
+   */
+  #applyScriptVariableFallback(resolved, reference) {
+    if (this.scriptVariables.size === 0) {
+      return resolved;
+    }
+
+    if (reference.qualifier) {
+      return resolved;
+    }
+
+    const status = resolved.physical_resolution_status;
+
+    if (status !== "PHYSICAL_COLUMN_NOT_FOUND" &&
+        status !== "UNRESOLVED_COLUMN") {
+      return resolved;
+    }
+
+    if (!this.scriptVariables.has(this.#normalizeName(reference.column_name))) {
+      return resolved;
+    }
+
+    return this.#createPhysicalReference(reference, {
+      physicalStatus: "SCRIPT_VARIABLE_RESOLVED",
+      sourceId: null,
       physicalColumns: []
     });
   }
