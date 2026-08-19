@@ -34,8 +34,13 @@
 --   dependency_path  the value-flow route origin -> ... -> ref_source (NULL for
 --                    depth = 1, i.e. a direct reference)
 --
--- Read-only definition; run once (and again whenever the repository table names
--- change). Not part of the daily pipeline.
+-- 01 setup already creates this view (right after the tables it reads), so a
+-- fresh environment has it without running this file. Use this standalone copy to
+-- (re)create the view on an existing deployment -- e.g. after changing the
+-- repository table-name prefix/suffix, or to refresh the definition without
+-- re-running 01. Keep this DDL in step with the copy embedded in 01.
+--
+-- Read-only definition; not part of the daily pipeline.
 --
 -- Not yet validated against BigQuery.
 -- ============================================================================

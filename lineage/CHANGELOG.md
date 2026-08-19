@@ -12,9 +12,13 @@
   usage source column), references of columns the origin impacts (depth =
   impact_rank + 1), carrying `dependency_path` for the route. Impact is fully
   replaced each STEP 4 run, so the view always reflects the current snapshot with
-  no snapshot filter. Read-only DDL, run once (and again if the repository table
-  names change); not part of the daily pipeline. SQL-only; the engine bundle is
-  unchanged. Not yet validated against BigQuery.
+  no snapshot filter. 01 setup now creates this view automatically (right after
+  the `t_lineage_column_usage` / `t_lineage_impact` tables it reads), so a fresh
+  environment has it without running this file; the standalone
+  `10_*` copy remains for (re)creating it on an existing deployment or after a
+  table-name change (keep the two DDLs in step). Read-only DDL; not part of the
+  daily pipeline. SQL-only; the engine bundle is unchanged. Not yet validated
+  against BigQuery.
 
 - Added a per-reference column usage index (`t_lineage_column_usage`) for
   requirement-change impact review: "select a table/view + column → where and how

@@ -141,8 +141,10 @@ npm test                        # build + verify:bundle + test:release を一括
   原点カラム基準の相対値（同じ利用箇所でも原点次第で深さが変わる）ため、usage 表に
   単一 rank を持たせず、`sql/maintenance/10_*` のビューでクエリ時結合。直接参照＝深さ1、
   impact 経由＝`impact_rank+1`、`dependency_path` で経由も表示。impact は STEP 4 で
-  毎回全置換のため常に最新スナップショット（フィルタ不要）。読み取り専用 DDL・
-  日次外・要再実行（テーブル名変更時）。
+  毎回全置換のため常に最新スナップショット（フィルタ不要）。**ビューは 01 setup が
+  テーブル作成直後に併せて作成**（`t_lineage_column_usage`／`t_lineage_impact` の後）。
+  `sql/maintenance/10_*` は既存デプロイへの後付け／テーブル名変更時の再作成用の同一
+  DDL（01 内の版と要同期）。
 
 ## 7. 現在地
 

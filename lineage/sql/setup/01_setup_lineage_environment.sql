@@ -96,6 +96,7 @@ DECLARE table_impact STRING;
 DECLARE table_diagnostic STRING;
 DECLARE table_job_registry STRING;
 DECLARE table_column_usage STRING;
+DECLARE view_column_usage_impact STRING;
 
 DECLARE repository_dataset_full_name STRING;
 
@@ -123,6 +124,11 @@ SET table_diagnostic =
 SET table_column_usage =
   bootstrap_table_name_prefix || 't_' || 'lineage_column_usage'
     || bootstrap_table_name_suffix;
+-- View marker is 'v_'. Joins the column usage index to the impact graph to give
+-- each downstream usage a depth (see the CREATE VIEW near the table creations).
+SET view_column_usage_impact =
+  bootstrap_table_name_prefix || 'v_' || 'lineage_column_usage_impact'
+    || bootstrap_table_name_suffix;
 
 ASSERT REGEXP_CONTAINS(table_definition_registry, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_definition_registry name.';
@@ -136,6 +142,8 @@ ASSERT REGEXP_CONTAINS(table_job_registry, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_job_registry name.';
 ASSERT REGEXP_CONTAINS(table_column_usage, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_column_usage name.';
+ASSERT REGEXP_CONTAINS(view_column_usage_impact, r'^[A-Za-z0-9_-]+$')
+AS 'Invalid view_column_usage_impact name.';
 
 SET repository_dataset_full_name = FORMAT(
   '%s.%s',
@@ -442,6 +450,90 @@ EXECUTE IMMEDIATE FORMAT(
   ''',
   repository_dataset_full_name,
   table_column_usage
+);
+
+-- Column-usage x impact depth view. Joins the usage index to the impact graph so
+-- a report can pick an ORIGIN column and see every downstream usage site with a
+-- DEPTH (relative to that origin: 1 = direct reference, impact_rank + 1 deeper)
+-- and the value-flow path. Depth is origin-relative -- the same usage site sits
+-- at different depths for different origins -- so it is a view (computed per
+-- (origin, usage-site) on read), never a stored rank on the usage table. Impact
+-- is fully replaced each 03 STEP 4 run, so the view always holds the current
+-- snapshot with no snapshot filter. Standalone/rerun copy:
+-- sql/maintenance/10_create_column_usage_impact_view.sql (keep the two in step).
+-- Created after the tables it reads (t_lineage_column_usage / t_lineage_impact).
+EXECUTE IMMEDIATE FORMAT(
+  '''
+  CREATE OR REPLACE VIEW `%s.%s`
+  OPTIONS (
+    description = 'Column usage joined to impact: for a chosen origin column, every downstream usage site with a depth (1 = direct reference; impact_rank + 1 deeper) and the value-flow path.'
+  )
+  AS
+  -- depth = 1: the usage references the origin column directly.
+  SELECT
+    u.source_project      AS origin_project,
+    u.source_dataset      AS origin_dataset,
+    u.source_object       AS origin_object,
+    u.source_object_type  AS origin_object_type,
+    u.source_column       AS origin_column,
+    1                     AS depth,
+    u.source_project      AS ref_source_project,
+    u.source_dataset      AS ref_source_dataset,
+    u.source_object       AS ref_source_object,
+    u.source_object_type  AS ref_source_object_type,
+    u.source_column       AS ref_source_column,
+    u.source_field_path   AS ref_source_field_path,
+    u.object_project      AS usage_object_project,
+    u.object_dataset      AS usage_object_dataset,
+    u.object_name         AS usage_object_name,
+    u.object_type         AS usage_object_type,
+    u.generation_type     AS usage_generation_type,
+    u.usage_type,
+    u.reference_name,
+    u.line_number,
+    u.column_number,
+    u.line_text,
+    u.resolution_status,
+    CAST(NULL AS ARRAY<STRING>) AS dependency_path
+  FROM `%s.%s` AS u
+  UNION ALL
+  -- depth = impact_rank + 1: the usage references a column impacted by the origin.
+  SELECT
+    i.origin_project,
+    i.origin_dataset,
+    i.origin_object,
+    i.origin_object_type,
+    i.origin_column,
+    i.impact_rank + 1     AS depth,
+    u.source_project      AS ref_source_project,
+    u.source_dataset      AS ref_source_dataset,
+    u.source_object       AS ref_source_object,
+    u.source_object_type  AS ref_source_object_type,
+    u.source_column       AS ref_source_column,
+    u.source_field_path   AS ref_source_field_path,
+    u.object_project      AS usage_object_project,
+    u.object_dataset      AS usage_object_dataset,
+    u.object_name         AS usage_object_name,
+    u.object_type         AS usage_object_type,
+    u.generation_type     AS usage_generation_type,
+    u.usage_type,
+    u.reference_name,
+    u.line_number,
+    u.column_number,
+    u.line_text,
+    u.resolution_status,
+    i.dependency_path
+  FROM `%s.%s` AS i
+  JOIN `%s.%s` AS u
+    ON  LOWER(u.source_project) = LOWER(i.impacted_project)
+    AND LOWER(u.source_dataset) = LOWER(i.impacted_dataset)
+    AND LOWER(u.source_object)  = LOWER(i.impacted_object)
+    AND LOWER(u.source_column)  = LOWER(i.impacted_column)
+  ''',
+  repository_dataset_full_name, view_column_usage_impact,
+  repository_dataset_full_name, table_column_usage,
+  repository_dataset_full_name, table_impact,
+  repository_dataset_full_name, table_column_usage
 );
 
 -- ============================================================================
