@@ -1,5 +1,29 @@
 # 1.5.0-032
 
+- Added `sql/maintenance/09_unanalyzed_object_definitions.sql`, a read-only,
+  on-demand report that lists the SQL of objects that CURRENTLY EXIST but are not
+  covered by lineage analysis, so an operator can see what is missing from the
+  graph and why. It surfaces two kinds of objects: (1) Views, from
+  `target_project.dataset.INFORMATION_SCHEMA.VIEWS` (view_definition), unioned
+  across every target dataset; and (2) generated TABLEs from
+  `region-<job_region>.INFORMATION_SCHEMA.JOBS_BY_PROJECT` whose destination table
+  STILL EXISTS now (confirmed against region `INFORMATION_SCHEMA.TABLES`, so a job
+  whose destination has since been dropped — a definition that no longer exists —
+  is excluded, per the request). Coverage is decided from the definition registry:
+  an object is covered when a registry row is COMPLETED / COMPLETED_WITH_WARNINGS
+  AND its `last_analyzed_hash` equals the object's current definition hash;
+  everything else is reported and tagged `coverage_reason` (`NOT_REGISTERED`,
+  `REGISTERED_NOT_YET_ANALYZED`, `ANALYSIS_<status>`, or
+  `DEFINITION_CHANGED_NOT_REANALYZED`). Results are DISTINCT by definition
+  (deduped on `definition_hash = TO_HEX(SHA256(sql))` via `QUALIFY ROW_NUMBER()`),
+  so repeated Scheduled Query / DAG runs of the same SQL collapse to one row and
+  the report does not pile up across runs. For CTAS jobs the `CREATE ... AS` prefix
+  is stripped with the exact regex from 03's `normalized_definitions`, so the
+  computed hash lines up with the registry's stored hash. Mirrors the 08 report
+  skeleton and the 03 [A]/[B]/[C] DECLARE layout; all qualified identifiers are
+  backtick-quoted (team rule) and anonymized (`project_id` / `dataset`). SQL-only;
+  the engine bundle is unchanged. Not yet validated against BigQuery.
+
 - Hardened the STEP 2 children filter so a parent `SCRIPT` job is never analyzed.
   The script-variable work widened the JOBS scan to also read `SCRIPT` jobs (for
   DECLARE extraction), and excluded them from the generated-table flow with
