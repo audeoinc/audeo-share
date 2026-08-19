@@ -1,5 +1,31 @@
 # 1.5.0-032
 
+- Added a per-reference column usage index (`t_lineage_column_usage`) for
+  requirement-change impact review: "select a table/view + column → where and how
+  is it used". Unlike the impact table (value-flow / SELECT lineage), this captures
+  references in ALL clauses (SELECT / WHERE / JOIN_ON / JOIN_UNNEST / FROM_UNNEST /
+  GROUP_BY / HAVING / QUALIFY / ORDER_BY), one row per resolved physical-column
+  reference, with `usage_type` (the clause), `reference_name`, the resolved source
+  physical column (`source_project/dataset/object/object_type/column/field_path`,
+  VIEW/TABLE classified as for the dependency edges), the referencing object, and
+  `line_number` / `column_number` / `line_text` (the single source line holding the
+  reference token). Engine: the exporter now emits a flattened `column_usages`
+  table, built from `physical_column_references` (which already carry `clause_type`
+  + resolved physical columns) with line info derived from the token's `line_no`
+  and the original SQL; derived / unresolved references are excluded. Bundle
+  rebuilt (`sha256 37aec3cd…`, 459728 bytes). SQL: 01 creates the table; 03 STEP 3
+  stages `batch_staged_column_usage` from the UDF `column_usages` for COMPLETED
+  objects and publishes it with the same delete-by-object + insert, backup /
+  rollback, and deactivated-object orphan-cleanup machinery as the direct
+  dependencies. The table is not one of render_dynamic_sql's fixed `__T_*__`
+  placeholders, so it is addressed by a directly-built qualified name
+  (`column_usage_fqn`); 03 also `CREATE TABLE IF NOT EXISTS` it once for
+  deployments whose 01 predates it (authoritative schema stays in 01). The
+  companion ask — trace a downstream SELECTed column back to its origin and the
+  path it takes — is already answered by the existing impact table
+  (`origin`/`impacted` + `dependency_path`), so no new work there. Test:
+  `test_v1_5_0_069`. Not yet validated against BigQuery.
+
 - Persisted the 09 report as a repository table refreshed at the end of the daily
   pipeline. `03_run_daily_lineage_pipeline.sql` gains STEP 5, which runs
   unconditionally after STEP 4 and does one `CREATE OR REPLACE TABLE

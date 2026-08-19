@@ -261,6 +261,11 @@ DECLARE table_job_registry STRING;
 -- table, full-refreshed at the end of each run). Not part of render_dynamic_sql's
 -- fixed placeholder set; STEP 5 addresses it by a directly-built qualified name.
 DECLARE table_unanalyzed_definition STRING;
+-- Column usage index (per-reference, all clauses). Published by STEP 3 alongside
+-- the direct dependencies. Also outside render_dynamic_sql's fixed placeholders,
+-- so it is addressed by a directly-built qualified name (column_usage_fqn below).
+DECLARE table_column_usage STRING;
+DECLARE column_usage_fqn STRING;
 
 DECLARE repo_tables STRUCT<
   def_registry STRING,
@@ -313,6 +318,8 @@ SET table_diagnostic =
 SET table_unanalyzed_definition =
   table_name_prefix || 't_' || 'lineage_unanalyzed_definition'
     || table_name_suffix;
+SET table_column_usage =
+  table_name_prefix || 't_' || 'lineage_column_usage' || table_name_suffix;
 
 ASSERT REGEXP_CONTAINS(table_definition_registry, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_definition_registry name.';
@@ -326,6 +333,8 @@ ASSERT REGEXP_CONTAINS(table_job_registry, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_job_registry name.';
 ASSERT REGEXP_CONTAINS(table_unanalyzed_definition, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_unanalyzed_definition name.';
+ASSERT REGEXP_CONTAINS(table_column_usage, r'^[A-Za-z0-9_-]+$')
+AS 'Invalid table_column_usage name.';
 
 SET repo_tables = STRUCT(
   table_definition_registry AS def_registry,
@@ -364,6 +373,46 @@ ASSERT REGEXP_CONTAINS(target_project_id, r'^[A-Za-z0-9._:-]+$')
 AS 'Invalid target_project_id.';
 ASSERT REGEXP_CONTAINS(job_region, r'^[A-Za-z0-9-]+$')
 AS 'Invalid job_region.';
+
+-- Column usage index table qualified name (not a render_dynamic_sql placeholder).
+-- Built once and reused by STEP 3's publish. CREATE TABLE IF NOT EXISTS keeps a
+-- deployment whose 01 setup predates this table self-healing (no-op once 01 has
+-- created it); the authoritative schema lives in 01 -- keep the two in step.
+SET column_usage_fqn = FORMAT(
+  '%s.%s.%s', repository_project_id, repository_dataset, table_column_usage
+);
+EXECUTE IMMEDIATE FORMAT(
+  """
+  CREATE TABLE IF NOT EXISTS `%s`
+  (
+    source_project STRING,
+    source_dataset STRING,
+    source_object STRING NOT NULL,
+    source_object_type STRING NOT NULL,
+    source_column STRING NOT NULL,
+    source_field_path STRING,
+    object_project STRING NOT NULL,
+    object_dataset STRING NOT NULL,
+    object_name STRING NOT NULL,
+    object_type STRING NOT NULL,
+    generation_type STRING NOT NULL,
+    definition_hash STRING NOT NULL,
+    usage_type STRING NOT NULL,
+    reference_name STRING,
+    line_number INT64,
+    column_number INT64,
+    line_text STRING,
+    resolution_status STRING,
+    usage_key STRING NOT NULL,
+    analyzed_at TIMESTAMP NOT NULL
+  )
+  CLUSTER BY source_project, source_dataset, source_object, source_column
+  OPTIONS (
+    description = 'Per-reference column usage index (all clauses) for impact review'
+  )
+  """,
+  column_usage_fqn
+);
 
 -- Resolve target_datasets by scanning the target project's datasets in
 -- job_region and applying the include/exclude regex patterns. Dataset ids keep
@@ -1493,6 +1542,26 @@ BEGIN
   AS 'Unresolved placeholder in orphan diagnostic DELETE SQL.';
 
   EXECUTE IMMEDIATE rendered_sql;
+
+  -- Column usage rows for a deactivated referencing object are orphans too (real
+  -- table via column_usage_fqn; keyed on the object that CONTAINS the reference).
+  EXECUTE IMMEDIATE FORMAT(
+    """
+    DELETE FROM `%s` AS usage
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM `%s` AS registry
+      WHERE registry.is_active = TRUE
+        AND LOWER(registry.object_project) = LOWER(usage.object_project)
+        AND LOWER(registry.object_dataset) = LOWER(usage.object_dataset)
+        AND LOWER(registry.object_name) = LOWER(usage.object_name)
+        AND registry.object_type = usage.object_type
+        AND registry.generation_type = usage.generation_type
+    )
+    """,
+    column_usage_fqn,
+    FORMAT('%s.%s.%s', repository_project_id, repository_dataset, table_definition_registry)
+  );
 
   -- --------------------------------------------------------------------------
   -- Which datasets have analyzable changed objects this run. The filter mirrors
@@ -2674,6 +2743,151 @@ BEGIN
       analyzed_at
     FROM normalized_edges;
 
+    -- Column usage index (COMPLETED objects only). One row per resolved physical
+    -- column reference in each published object's SQL, across ALL clauses (not
+    -- only SELECT value-flow), from the UDF's column_usages export. source_* is
+    -- the referenced physical column (VIEW/TABLE classified like the dependency
+    -- edges); object_* is the object whose SQL contains the reference; usage_type
+    -- is the clause; line_number / line_text locate the reference.
+    CREATE OR REPLACE TEMP TABLE batch_staged_column_usage AS
+    WITH usage_rows AS (
+      SELECT
+        r.object_project,
+        r.object_dataset,
+        r.object_name,
+        r.object_type,
+        r.generation_type,
+        r.definition_hash,
+        JSON_VALUE(usage_row, '$.usage_type') AS usage_type,
+        JSON_VALUE(usage_row, '$.reference_name') AS reference_name,
+        JSON_VALUE(usage_row, '$.physical_table_name') AS physical_table_name,
+        JSON_VALUE(usage_row, '$.physical_column_name') AS physical_column_name,
+        JSON_VALUE(usage_row, '$.field_path') AS field_path,
+        SAFE_CAST(JSON_VALUE(usage_row, '$.line_number') AS INT64) AS line_number,
+        SAFE_CAST(JSON_VALUE(usage_row, '$.column_number') AS INT64) AS column_number,
+        JSON_VALUE(usage_row, '$.line_text') AS line_text,
+        JSON_VALUE(usage_row, '$.physical_resolution_status') AS resolution_status
+      FROM batch_udf_results AS r,
+      UNNEST(
+        JSON_QUERY_ARRAY(r.exported_json, '$.exported_tables.column_usages')
+      ) AS usage_row
+      WHERE EXISTS (
+        SELECT 1
+        FROM batch_completed_objects AS pub
+        WHERE pub.object_project = r.object_project
+          AND pub.object_dataset = r.object_dataset
+          AND pub.object_name = r.object_name
+          AND pub.object_type = r.object_type
+          AND pub.generation_type = r.generation_type
+          AND pub.definition_hash = r.definition_hash
+      )
+    ),
+    parsed_usages AS (
+      SELECT
+        u.definition_hash,
+        LOWER(
+          CASE ARRAY_LENGTH(SPLIT(u.physical_table_name, '.'))
+            WHEN 3 THEN SPLIT(u.physical_table_name, '.')[SAFE_OFFSET(0)]
+            ELSE u.object_project
+          END
+        ) AS source_project,
+        LOWER(
+          CASE ARRAY_LENGTH(SPLIT(u.physical_table_name, '.'))
+            WHEN 3 THEN SPLIT(u.physical_table_name, '.')[SAFE_OFFSET(1)]
+            WHEN 2 THEN SPLIT(u.physical_table_name, '.')[SAFE_OFFSET(0)]
+            ELSE u.object_dataset
+          END
+        ) AS source_dataset,
+        LOWER(
+          CASE ARRAY_LENGTH(SPLIT(u.physical_table_name, '.'))
+            WHEN 3 THEN SPLIT(u.physical_table_name, '.')[SAFE_OFFSET(2)]
+            WHEN 2 THEN SPLIT(u.physical_table_name, '.')[SAFE_OFFSET(1)]
+            ELSE SPLIT(u.physical_table_name, '.')[SAFE_OFFSET(0)]
+          END
+        ) AS source_object,
+        LOWER(u.physical_column_name) AS source_column,
+        LOWER(u.field_path) AS source_field_path,
+        LOWER(u.object_project) AS object_project,
+        LOWER(u.object_dataset) AS object_dataset,
+        LOWER(u.object_name) AS object_name,
+        u.object_type AS object_type,
+        u.generation_type AS generation_type,
+        u.usage_type AS usage_type,
+        u.reference_name AS reference_name,
+        u.line_number AS line_number,
+        u.column_number AS column_number,
+        u.line_text AS line_text,
+        u.resolution_status AS resolution_status,
+        batch_analyzed_at AS analyzed_at
+      FROM usage_rows AS u
+      WHERE u.physical_table_name IS NOT NULL
+        AND u.physical_column_name IS NOT NULL
+    ),
+    classified_usages AS (
+      SELECT
+        parsed.*,
+        CASE
+          WHEN source_registry.object_type = 'VIEW' THEN 'VIEW'
+          WHEN source_table.table_type = 'VIEW' THEN 'VIEW'
+          ELSE 'TABLE'
+        END AS source_object_type
+      FROM parsed_usages AS parsed
+      LEFT JOIN active_view_definitions AS source_registry
+        ON source_registry.is_active = TRUE
+       AND LOWER(source_registry.object_project) = parsed.source_project
+       AND LOWER(source_registry.object_dataset) = parsed.source_dataset
+       AND LOWER(source_registry.object_name) = parsed.source_object
+       AND source_registry.object_type = 'VIEW'
+      LEFT JOIN current_target_tables AS source_table
+        ON LOWER(source_table.table_catalog) = parsed.source_project
+       AND LOWER(source_table.table_schema) = parsed.source_dataset
+       AND LOWER(source_table.table_name) = parsed.source_object
+      QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY
+          parsed.definition_hash, parsed.source_project, parsed.source_dataset,
+          parsed.source_object, parsed.source_column, parsed.object_project,
+          parsed.object_dataset, parsed.object_name, parsed.usage_type,
+          parsed.line_number, parsed.column_number, parsed.reference_name
+        ORDER BY source_registry.updated_at DESC NULLS LAST
+      ) = 1
+    )
+    SELECT
+      source_project,
+      source_dataset,
+      source_object,
+      source_object_type,
+      source_column,
+      source_field_path,
+      object_project,
+      object_dataset,
+      object_name,
+      object_type,
+      generation_type,
+      definition_hash,
+      usage_type,
+      reference_name,
+      line_number,
+      column_number,
+      line_text,
+      resolution_status,
+      TO_HEX(SHA256(CONCAT(
+        COALESCE(object_project, ''), '|',
+        COALESCE(object_dataset, ''), '|',
+        COALESCE(object_name, ''), '|',
+        COALESCE(object_type, ''), '|',
+        COALESCE(generation_type, ''), '|',
+        COALESCE(source_project, ''), '|',
+        COALESCE(source_dataset, ''), '|',
+        COALESCE(source_object, ''), '|',
+        COALESCE(source_column, ''), '|',
+        COALESCE(usage_type, ''), '|',
+        CAST(COALESCE(line_number, -1) AS STRING), '|',
+        CAST(COALESCE(column_number, -1) AS STRING), '|',
+        COALESCE(reference_name, '')
+      ))) AS usage_key,
+      analyzed_at
+    FROM classified_usages;
+
     -- Diagnostics emitted by the UDF for every analyzed object (COMPLETED and
     -- non-COMPLETED alike). generation_type is carried for precise joins but is
     -- not part of the diagnostic table schema.
@@ -2815,6 +3029,27 @@ BEGIN
     AS 'Unresolved placeholder in batch diagnostic backup SQL.';
     EXECUTE IMMEDIATE rendered_sql;
 
+    -- Column usage backup (real table, addressed by column_usage_fqn -- not a
+    -- render placeholder). Keyed by the referencing object, matching the publish
+    -- DELETE below, so the EXCEPTION handler can restore exactly what it removes.
+    EXECUTE IMMEDIATE FORMAT(
+      """
+      CREATE OR REPLACE TEMP TABLE batch_previous_column_usage AS
+      SELECT usage.*
+      FROM `%s` AS usage
+      WHERE EXISTS (
+        SELECT 1
+        FROM batch_completed_objects AS obj
+        WHERE LOWER(usage.object_project) = LOWER(obj.object_project)
+          AND LOWER(usage.object_dataset) = LOWER(obj.object_dataset)
+          AND LOWER(usage.object_name) = LOWER(obj.object_name)
+          AND usage.object_type = obj.object_type
+          AND usage.generation_type = obj.generation_type
+      )
+      """,
+      column_usage_fqn
+    );
+
     -- ------------------------------------------------------------------------
     -- 7. Publish. Every statement is set-based and keyed by the object sets
     -- above. On any failure the handler restores the backed-up rows and
@@ -2859,6 +3094,43 @@ BEGIN
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch dependency INSERT SQL.';
       EXECUTE IMMEDIATE rendered_sql;
+
+      -- 7a-2. Replace column usage rows for COMPLETED objects (keyed by the
+      -- referencing object). Real table addressed by column_usage_fqn.
+      EXECUTE IMMEDIATE FORMAT(
+        """
+        DELETE FROM `%s` AS usage
+        WHERE EXISTS (
+          SELECT 1
+          FROM batch_completed_objects AS obj
+          WHERE LOWER(usage.object_project) = LOWER(obj.object_project)
+            AND LOWER(usage.object_dataset) = LOWER(obj.object_dataset)
+            AND LOWER(usage.object_name) = LOWER(obj.object_name)
+            AND usage.object_type = obj.object_type
+            AND usage.generation_type = obj.generation_type
+        )
+        """,
+        column_usage_fqn
+      );
+      EXECUTE IMMEDIATE FORMAT(
+        """
+        INSERT INTO `%s` (
+          source_project, source_dataset, source_object, source_object_type,
+          source_column, source_field_path, object_project, object_dataset,
+          object_name, object_type, generation_type, definition_hash,
+          usage_type, reference_name, line_number, column_number, line_text,
+          resolution_status, usage_key, analyzed_at
+        )
+        SELECT
+          source_project, source_dataset, source_object, source_object_type,
+          source_column, source_field_path, object_project, object_dataset,
+          object_name, object_type, generation_type, definition_hash,
+          usage_type, reference_name, line_number, column_number, line_text,
+          resolution_status, usage_key, analyzed_at
+        FROM batch_staged_column_usage
+        """,
+        column_usage_fqn
+      );
 
       -- 7b. Replace diagnostics for all analyzed objects, then insert the UDF
       -- diagnostics, the non-publishable markers, and (appended) the
@@ -2995,6 +3267,27 @@ BEGIN
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch rollback dependency INSERT SQL.';
       EXECUTE IMMEDIATE rendered_sql;
+
+      -- Restore column usage rows (real table via column_usage_fqn).
+      EXECUTE IMMEDIATE FORMAT(
+        """
+        DELETE FROM `%s` AS usage
+        WHERE EXISTS (
+          SELECT 1
+          FROM batch_completed_objects AS obj
+          WHERE LOWER(usage.object_project) = LOWER(obj.object_project)
+            AND LOWER(usage.object_dataset) = LOWER(obj.object_dataset)
+            AND LOWER(usage.object_name) = LOWER(obj.object_name)
+            AND usage.object_type = obj.object_type
+            AND usage.generation_type = obj.generation_type
+        )
+        """,
+        column_usage_fqn
+      );
+      EXECUTE IMMEDIATE FORMAT(
+        'INSERT INTO `%s` SELECT * FROM batch_previous_column_usage',
+        column_usage_fqn
+      );
 
       SET sql_template = """
         DELETE FROM `__T_DIAGNOSTIC__` AS diagnostic

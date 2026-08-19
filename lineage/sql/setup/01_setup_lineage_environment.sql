@@ -95,6 +95,7 @@ DECLARE table_direct_dependency STRING;
 DECLARE table_impact STRING;
 DECLARE table_diagnostic STRING;
 DECLARE table_job_registry STRING;
+DECLARE table_column_usage STRING;
 
 DECLARE repository_dataset_full_name STRING;
 
@@ -119,6 +120,9 @@ SET table_impact =
 SET table_diagnostic =
   bootstrap_table_name_prefix || 't_' || 'lineage_diagnostic'
     || bootstrap_table_name_suffix;
+SET table_column_usage =
+  bootstrap_table_name_prefix || 't_' || 'lineage_column_usage'
+    || bootstrap_table_name_suffix;
 
 ASSERT REGEXP_CONTAINS(table_definition_registry, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_definition_registry name.';
@@ -130,6 +134,8 @@ ASSERT REGEXP_CONTAINS(table_diagnostic, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_diagnostic name.';
 ASSERT REGEXP_CONTAINS(table_job_registry, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_job_registry name.';
+ASSERT REGEXP_CONTAINS(table_column_usage, r'^[A-Za-z0-9_-]+$')
+AS 'Invalid table_column_usage name.';
 
 SET repository_dataset_full_name = FORMAT(
   '%s.%s',
@@ -380,6 +386,62 @@ EXECUTE IMMEDIATE FORMAT(
   ''',
   repository_dataset_full_name,
   table_job_registry
+);
+
+-- MIGRATION (existing deployments): this table is new. Re-running 01 recreates it
+-- (CREATE OR REPLACE, destructive for the other tables too), but 03 also issues a
+-- CREATE TABLE IF NOT EXISTS for it at startup, so an existing deployment picks it
+-- up on the next pipeline run without re-running 01. Keep this schema and 03's
+-- IF NOT EXISTS copy in step.
+--
+-- Column usage index: one row per resolved physical-column reference inside a
+-- published object's SQL, across ALL clauses (SELECT / WHERE / JOIN / GROUP BY /
+-- HAVING / QUALIFY / ORDER BY), not only value-flow (SELECT) lineage. Answers
+-- "where and how is <table/view>.<column> used" for impact review: which object,
+-- which line, and in what clause. Populated by 03 STEP 3 from the analysis UDF's
+-- physical_column_references (which now carry line_number / line_text). Filter by
+-- the source_* columns to find every place a given column is referenced; join to
+-- the impact table (origin/impacted + dependency_path) for the transitive
+-- downstream reach and to trace a downstream SELECTed column back to its origin.
+EXECUTE IMMEDIATE FORMAT(
+  '''
+  CREATE OR REPLACE TABLE `%s.%s`
+  (
+    -- Referenced physical column (the selectable object.column in the report).
+    source_project STRING,
+    source_dataset STRING,
+    source_object STRING NOT NULL,
+    source_object_type STRING NOT NULL,
+    source_column STRING NOT NULL,
+    source_field_path STRING,
+    -- Object whose SQL contains the reference.
+    object_project STRING NOT NULL,
+    object_dataset STRING NOT NULL,
+    object_name STRING NOT NULL,
+    object_type STRING NOT NULL,
+    generation_type STRING NOT NULL,
+    definition_hash STRING NOT NULL,
+    -- How and where it is used.
+    usage_type STRING NOT NULL,
+    reference_name STRING,
+    line_number INT64,
+    column_number INT64,
+    -- The single source line that contains the reference token (per requirement;
+    -- the full expression is identifiable via reference_name).
+    line_text STRING,
+    resolution_status STRING,
+    -- Stable identity of one usage site (object + source column + clause +
+    -- position), so a re-publish of the same object is idempotent.
+    usage_key STRING NOT NULL,
+    analyzed_at TIMESTAMP NOT NULL
+  )
+  CLUSTER BY source_project, source_dataset, source_object, source_column
+  OPTIONS (
+    description = 'Per-reference column usage index (all clauses) for impact review'
+  )
+  ''',
+  repository_dataset_full_name,
+  table_column_usage
 );
 
 -- ============================================================================

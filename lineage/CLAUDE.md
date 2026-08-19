@@ -125,11 +125,23 @@ npm test                        # build + verify:bundle + test:release を一括
   組み立て（バッククォート）。STEP 5 の CREATE OR REPLACE 自体が作成するので 01 不要。
   registry-exclude で未登録の object は含まれない（オンデマンドの 09 が
   `NOT_REGISTERED` として拾う）。
+  **カラム利用箇所インデックス（t_lineage_column_usage）**：カラム要件変更の影響
+  確認用（Looker で table/view＋カラムを選ぶと「どの object のどの行でどう使われて
+  いるか」を表示）。impact は値フロー（SELECT）系統だが、こちらは全句
+  （SELECT/WHERE/JOIN_ON/JOIN_UNNEST/FROM_UNNEST/GROUP_BY/HAVING/QUALIFY/ORDER_BY）の
+  物理カラム参照を「1参照=1行」で持つ。エンジンは exporter で `column_usages` を新規
+  出力（`physical_column_references` を平坦化し、解決済み物理列ごとに usage_type=clause・
+  reference_name・source 物理列・line_number・column_number・line_text＝参照トークンの
+  ある1行 を付与。派生/未解決参照は除外）。03 STEP 3 が direct_dependency と同じ
+  delete-by-object＋insert で publish（rollback/orphan cleanup も対応）。テーブル名は
+  render の固定枠外なので直接組み立て（`column_usage_fqn`）、既存デプロイ向けに 03 が
+  `CREATE TABLE IF NOT EXISTS` で自己修復（正本スキーマは 01）。下流列の「大元と経由」は
+  既存 impact（`origin/impacted`＋`dependency_path`）で辿れるため新規実装なし。
 
 ## 7. 現在地
 
-- バンドル: `sha256 = ff87a8522156f3b116c20ed14635c0d45eb770a8f223106acc50c6f14fb6e1ea`、`455709` bytes
-- `test:release` 46 本 PASS / ゴールデン 48 ケース PASS
+- バンドル: `sha256 = 37aec3cd5cb25d8bb4cf8a6975bc6e1c34ba67ee3f352527e05137b8781a2b7b`、`459728` bytes
+- `test:release` 47 本 PASS / ゴールデン 48 ケース PASS
 - 直近の修正: 03 STEP 3 を**データセット単位のループ**へ変更し、UDF チャンク分割を撤去。
   リージョン全体を1パスで解析すると V8 ヒープ蓄積で "UDF out of memory" になり、行数チャンクでも
   大オブジェクトが偏ると OOM が続いた。実運用で「1データセットずつなら通る」ことを確認済みのため、
