@@ -6729,6 +6729,20 @@ function tokenize(sqlText) {
     }
 
     /*
+     * 位置パラメータ '?'（positional query parameter）。名前を持たないため
+     * 識別子として解決できないが、値は DAG / クライアントが別途バインドする。
+     * 名前付き @name と同じく 1 つの PARAMETER Token として扱い、式の中では
+     * 不透明な値（系統を持たない）とする。これをしないと '?' が未知文字として
+     * 解析失敗（PARTIAL_FAILURE）になり、「未解決」と「パラメータ」の区別が
+     * つかなくなる。
+     */
+    if (character === "?") {
+      advanceCharacter("?");
+      pushToken("?", "?", "PARAMETER", startLine, startColumn);
+      continue;
+    }
+
+    /*
      * 通常識別子またはKeywordを読み取る。
      *
      * 最初の文字が識別子開始条件を満たした後、識別子として継続できる

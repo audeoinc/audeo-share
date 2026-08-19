@@ -1,5 +1,19 @@
 # 1.5.0-032
 
+- Recognized positional query parameters (`?`) so parameterized DAG SQL analyzes
+  cleanly. Parameterized queries (run by DAGs / clients) keep their `@name` and
+  `?` placeholders in the stored SQL text (JOBS.query); the parameter *values* are
+  bound separately, so the analyzer sees the placeholders. Named `@param` was
+  already lexed as a PARAMETER token and worked, but a bare positional `?` — a
+  parameter with no identifier — was an unknown character that failed the parse
+  (PARTIAL_FAILURE), which is indistinguishable from a genuinely unresolvable
+  object. Fix: the lexer now reads `?` as a PARAMETER token, exactly like `@name`.
+  A parameter is an opaque value with no lineage, so `?` anywhere (WHERE, IN list,
+  LIMIT, SELECT, BETWEEN) no longer affects lineage and the analysis COMPLETEs;
+  named `@param` behavior is unchanged. Test: `test_v1_5_0_066.js`. Engine change:
+  bundle rebuilt (`release_manifest.json` sha256 / size_bytes updated); redeploy
+  the UDF bundle to GCS.
+
 - Allowed `-` (hyphen) in the repository table names this system creates. The
   name-format ASSERTs on `table_definition_registry` / `table_direct_dependency` /
   `table_impact` / `table_diagnostic` / `table_job_registry` (in
