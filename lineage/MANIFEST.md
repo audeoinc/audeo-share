@@ -199,7 +199,6 @@ Generated: 2026-07-28
 - `sql/maintenance/07_run_single_view_analysis.sql`
 - `sql/maintenance/08_view_last_access.sql`
 - `sql/maintenance/09_unanalyzed_object_definitions.sql`
-- `sql/maintenance/10_create_column_usage_impact_view.sql`
 - `sql/pipeline/03_run_daily_lineage_pipeline.sql`
 - `sql/sample/02_setup_sample_environment.sql`
 - `sql/sample/02a_create_cost_measurement_view.sql`

@@ -143,8 +143,8 @@ npm test                        # build + verify:bundle + test:release を一括
   impact 経由＝`impact_rank+1`、`dependency_path` で経由も表示。impact は STEP 4 で
   毎回全置換のため常に最新スナップショット（フィルタ不要）。**ビューは 01 setup が
   テーブル作成直後に併せて作成**（`t_lineage_column_usage`／`t_lineage_impact` の後）。
-  `sql/maintenance/10_*` は既存デプロイへの後付け／テーブル名変更時の再作成用の同一
-  DDL（01 内の版と要同期）。
+  既存デプロイでビューだけ追加/更新したい場合は 01 の該当 `CREATE OR REPLACE VIEW`
+  ブロックを単独実行すればよい（データを持たないので無害）。
 
 ## 7. 現在地
 

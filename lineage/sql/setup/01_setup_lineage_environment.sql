@@ -459,9 +459,8 @@ EXECUTE IMMEDIATE FORMAT(
 -- at different depths for different origins -- so it is a view (computed per
 -- (origin, usage-site) on read), never a stored rank on the usage table. Impact
 -- is fully replaced each 03 STEP 4 run, so the view always holds the current
--- snapshot with no snapshot filter. Standalone/rerun copy:
--- sql/maintenance/10_create_column_usage_impact_view.sql (keep the two in step).
--- Created after the tables it reads (t_lineage_column_usage / t_lineage_impact).
+-- snapshot with no snapshot filter. Created here, after the tables it reads
+-- (t_lineage_column_usage / t_lineage_impact).
 EXECUTE IMMEDIATE FORMAT(
   '''
   CREATE OR REPLACE VIEW `%s.%s`

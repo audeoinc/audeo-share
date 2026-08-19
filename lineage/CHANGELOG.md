@@ -1,24 +1,21 @@
 # 1.5.0-032
 
-- Added `sql/maintenance/10_create_column_usage_impact_view.sql`, which creates a
-  view (`v_lineage_column_usage_impact`) joining the column usage index to the
-  impact graph so a Looker report can pick an ORIGIN column and see every
-  downstream usage site with a DEPTH like impact_rank, plus the value-flow path.
-  Depth is relative to a chosen origin (the same usage site sits at different
-  depths for different origins), so it is computed per (origin, usage-site) on
-  read rather than stored as an ambiguous single rank on the usage table. The view
-  is the UNION of: direct references of the origin column (depth = 1) from
-  `t_lineage_column_usage`; and, joining `t_lineage_impact` (impacted column =
-  usage source column), references of columns the origin impacts (depth =
-  impact_rank + 1), carrying `dependency_path` for the route. Impact is fully
-  replaced each STEP 4 run, so the view always reflects the current snapshot with
-  no snapshot filter. 01 setup now creates this view automatically (right after
-  the `t_lineage_column_usage` / `t_lineage_impact` tables it reads), so a fresh
-  environment has it without running this file; the standalone
-  `10_*` copy remains for (re)creating it on an existing deployment or after a
-  table-name change (keep the two DDLs in step). Read-only DDL; not part of the
-  daily pipeline. SQL-only; the engine bundle is unchanged. Not yet validated
-  against BigQuery.
+- Added the `v_lineage_column_usage_impact` view (created by 01 setup, right after
+  the `t_lineage_column_usage` / `t_lineage_impact` tables it reads) that joins the
+  column usage index to the impact graph, so a Looker report can pick an ORIGIN
+  column and see every downstream usage site with a DEPTH like impact_rank, plus
+  the value-flow path. Depth is relative to a chosen origin (the same usage site
+  sits at different depths for different origins), so it is computed per (origin,
+  usage-site) on read rather than stored as an ambiguous single rank on the usage
+  table. The view is the UNION of: direct references of the origin column
+  (depth = 1) from `t_lineage_column_usage`; and, joining `t_lineage_impact`
+  (impacted column = usage source column), references of columns the origin impacts
+  (depth = impact_rank + 1), carrying `dependency_path` for the route. Impact is
+  fully replaced each STEP 4 run, so the view always reflects the current snapshot
+  with no snapshot filter. To (re)create just the view on an existing deployment
+  (or after a table-name change), run 01's `CREATE OR REPLACE VIEW` block on its
+  own -- it holds no data, so it is safe to replace anytime. SQL-only; the engine
+  bundle is unchanged. Not yet validated against BigQuery.
 
 - Added a per-reference column usage index (`t_lineage_column_usage`) for
   requirement-change impact review: "select a table/view + column → where and how
