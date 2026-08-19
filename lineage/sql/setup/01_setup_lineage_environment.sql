@@ -337,6 +337,12 @@ EXECUTE IMMEDIATE FORMAT(
     object_dataset STRING NOT NULL,
     object_name STRING NOT NULL,
     object_type STRING NOT NULL,
+    -- How this object's SQL was obtained: 'VIEW_DEFINITION' for a View (its SQL is
+    -- INFORMATION_SCHEMA.VIEWS.view_definition), or a job execution source
+    -- ('SCHEDULED_QUERY' / 'DAG' / ...) for a generated table (its SQL is the
+    -- INFORMATION_SCHEMA.JOBS query). Lets a reader tell a view definition from a
+    -- job SQL without joining the registry (object_type only says VIEW vs TABLE).
+    generation_type STRING,
     diagnostic_code STRING NOT NULL,
     engine_stage STRING,
     severity STRING NOT NULL,

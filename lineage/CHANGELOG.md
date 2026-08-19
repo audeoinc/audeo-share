@@ -1,5 +1,19 @@
 # 1.5.0-032
 
+- Added a `generation_type` column to the diagnostic table (`t_lineage_diagnostic`)
+  so a reader can tell whether a diagnostic's SQL is a View definition or a
+  generated-table job SQL, without joining the registry. `object_type` only says
+  VIEW vs TABLE; `generation_type` is 'VIEW_DEFINITION' for a View (its SQL is
+  INFORMATION_SCHEMA.VIEWS.view_definition) or the job execution source
+  ('SCHEDULED_QUERY' / 'DAG' / ...) for a generated table (its SQL is the
+  INFORMATION_SCHEMA.JOBS query). The value was already carried through the
+  pipeline's diagnostic staging (used as a join key) and is simply now persisted.
+  01 setup adds the (nullable) column; 03 STEP 3 writes it in all three diagnostic
+  sources (UDF diagnostics, the non-publishable marker, and pre-analysis failures);
+  06's single-object maintenance path writes it too. Nullable so no diagnostic
+  write path can fail on it. SQL-only; the engine bundle is unchanged. Not yet
+  validated against BigQuery.
+
 - Added the `v_lineage_column_usage_impact` view (created by 01 setup, right after
   the `t_lineage_column_usage` / `t_lineage_impact` tables it reads) that joins the
   column usage index to the impact graph, so a Looker report can pick an ORIGIN

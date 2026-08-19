@@ -2941,6 +2941,7 @@ BEGIN
       LOWER(r.object_dataset) AS object_dataset,
       LOWER(r.object_name) AS object_name,
       r.object_type AS object_type,
+      r.generation_type AS generation_type,
       'UDF_RESULT_NOT_PUBLISHABLE' AS diagnostic_code,
       '06_analyze_changed_objects' AS engine_stage,
       'ERROR' AS severity,
@@ -2975,6 +2976,7 @@ BEGIN
       LOWER(f.object_dataset) AS object_dataset,
       LOWER(f.object_name) AS object_name,
       f.object_type AS object_type,
+      f.generation_type AS generation_type,
       'ANALYSIS_EXECUTION_FAILED' AS diagnostic_code,
       '06_analyze_changed_objects' AS engine_stage,
       'ERROR' AS severity,
@@ -3154,25 +3156,25 @@ BEGIN
       SET sql_template = """
         INSERT INTO `__T_DIAGNOSTIC__` (
           definition_hash, object_project, object_dataset, object_name,
-          object_type, diagnostic_code, engine_stage, severity, output_column,
-          expression, message, diagnostic_json, analyzed_at
+          object_type, generation_type, diagnostic_code, engine_stage, severity,
+          output_column, expression, message, diagnostic_json, analyzed_at
         )
         SELECT
           definition_hash, object_project, object_dataset, object_name,
-          object_type, diagnostic_code, engine_stage, severity, output_column,
-          expression, message, diagnostic_json, analyzed_at
+          object_type, generation_type, diagnostic_code, engine_stage, severity,
+          output_column, expression, message, diagnostic_json, analyzed_at
         FROM batch_staged_lineage_diagnostic
         UNION ALL
         SELECT
           definition_hash, object_project, object_dataset, object_name,
-          object_type, diagnostic_code, engine_stage, severity, output_column,
-          expression, message, diagnostic_json, analyzed_at
+          object_type, generation_type, diagnostic_code, engine_stage, severity,
+          output_column, expression, message, diagnostic_json, analyzed_at
         FROM batch_nonpublishable_diagnostic
         UNION ALL
         SELECT
           definition_hash, object_project, object_dataset, object_name,
-          object_type, diagnostic_code, engine_stage, severity, output_column,
-          expression, message, diagnostic_json, analyzed_at
+          object_type, generation_type, diagnostic_code, engine_stage, severity,
+          output_column, expression, message, diagnostic_json, analyzed_at
         FROM batch_preanalysis_diagnostic
       """;
       EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;

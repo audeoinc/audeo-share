@@ -495,6 +495,7 @@ BEGIN
           LOWER(target.object_dataset) AS object_dataset,
           LOWER(target.object_name) AS object_name,
           target.object_type AS object_type,
+          target.generation_type AS generation_type,
           COALESCE(JSON_VALUE(diagnostic_row, '$.code'), 'UNKNOWN')
             AS diagnostic_code,
           JSON_VALUE(diagnostic_row, '$.stage') AS engine_stage,

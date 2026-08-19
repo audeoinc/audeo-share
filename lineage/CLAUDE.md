@@ -145,6 +145,11 @@ npm test                        # build + verify:bundle + test:release を一括
   テーブル作成直後に併せて作成**（`t_lineage_column_usage`／`t_lineage_impact` の後）。
   既存デプロイでビューだけ追加/更新したい場合は 01 の該当 `CREATE OR REPLACE VIEW`
   ブロックを単独実行すればよい（データを持たないので無害）。
+  **診断の generation_type**：`t_lineage_diagnostic` に `generation_type`（nullable）を
+  追加。View 定義か Job SQL かを registry と join せず判別可（'VIEW_DEFINITION'＝View、
+  'SCHEDULED_QUERY'/'DAG' 等＝生成テーブル Job）。値は元々診断ステージングを流れており
+  永続化しただけ。書込みは 03 STEP 3 の3系統（UDF診断・非publishableマーカー・
+  pre-analysis失敗）と 06 単体経路。
 
 ## 7. 現在地
 
