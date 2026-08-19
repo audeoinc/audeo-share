@@ -76,6 +76,11 @@ npm test                        # build + verify:bundle + test:release を一括
     `DECLARE x ARRAY<STRING> DEFAULT []` は可。
   - `OFFSET` / `ORDINAL` は予約キーワード、`SAFE_OFFSET` / `SAFE_ORDINAL` は識別子。
   - 名前フィルタの正規表現は大文字小文字を無視：`REGEXP_CONTAINS(LOWER(name), LOWER(pattern))`。
+  - **修飾テーブル参照は必ずバッククォート（チームルール・必須）**：`project.dataset.table` /
+    `` `%s.%s.INFORMATION_SCHEMA.X` `` / リージョン修飾 `` `%s.region-%s`.INFORMATION_SCHEMA.X `` /
+    `CREATE ... TABLE \`%s.%s\`` はすべて backtick で囲む（ハイフン入り project や予約語 dataset/table でも
+    安全）。現状の全 SQL は準拠済み。新規・変更時も修飾テーブル/ビュー/INFORMATION_SCHEMA 参照は
+    裸で書かないこと（セッション一時テーブルの単一名と列参照は対象外）。
 - **03 パイプラインの構造**：`render_dynamic_sql`（8 プレースホルダ / 9 パラメータ）で
   テンプレート置換 → `EXECUTE IMMEDIATE`。この関数は **01 setup が UDF Dataset（`analyze_lineage_json`
   と同じ場所 = `udf_project_id.udf_dataset`）に作る永続関数**（旧: スクリプト内 TEMP FUNCTION。
