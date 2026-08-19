@@ -116,6 +116,15 @@ npm test                        # build + verify:bundle + test:release を一括
   解析せず読み飛ばし・別名任意）。外部/フェデレーテッド出力は物理列を持たないため、
   列参照は `EXTERNAL_SOURCE_RESOLVED`（定数同様の終端・系統も診断もなし）で解決。
   実テーブルとの JOIN では実列優先・誤 AMBIGUOUS なし。
+  **未解析オブジェクトのスナップショット（STEP 5）**：03 末尾で毎回
+  `CREATE OR REPLACE TABLE <prefix>t_lineage_unanalyzed_definition<suffix>` を実行。
+  レジストリ（STEP 1-2 で同期済み）から「実在（is_active・非 ephemeral）だが
+  解析カバー外＝COMPLETED かつ last_analyzed_hash=definition_hash ではない」行を
+  `coverage_reason` 付きで定義単位 DISTINCT に書き出す（INFORMATION_SCHEMA 再スキャン
+  なし・毎回全更新で積み上がらない）。名前は render の固定 `__T_*__` 枠外なので直接
+  組み立て（バッククォート）。STEP 5 の CREATE OR REPLACE 自体が作成するので 01 不要。
+  registry-exclude で未登録の object は含まれない（オンデマンドの 09 が
+  `NOT_REGISTERED` として拾う）。
 
 ## 7. 現在地
 

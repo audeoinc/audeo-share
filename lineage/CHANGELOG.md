@@ -1,5 +1,27 @@
 # 1.5.0-032
 
+- Persisted the 09 report as a repository table refreshed at the end of the daily
+  pipeline. `03_run_daily_lineage_pipeline.sql` gains STEP 5, which runs
+  unconditionally after STEP 4 and does one `CREATE OR REPLACE TABLE
+  <prefix>t_lineage_unanalyzed_definition<suffix>` — the currently-existing
+  (is_active, non-ephemeral) definition-registry objects that are NOT fully
+  covered by analysis (NOT `COMPLETED` / `COMPLETED_WITH_WARNINGS` with
+  `last_analyzed_hash` = `definition_hash`), each tagged with a `coverage_reason`
+  (`REGISTERED_NOT_YET_ANALYZED` / `ANALYSIS_<status>` /
+  `DEFINITION_CHANGED_NOT_REANALYZED`) and deduped by `definition_hash`, plus a
+  `refreshed_at`. It is built straight from the registry (whose `definition_text` /
+  `definition_hash` / `analysis_status` are already synchronized by STEP 1-2), so
+  it adds no INFORMATION_SCHEMA re-scan and never piles up across runs (full
+  refresh). The table's qualified name is assembled directly (backtick-quoted; it
+  is not one of render_dynamic_sql's fixed `__T_*__` placeholders), a new
+  `table_unanalyzed_definition` name variable is declared in [C] alongside the
+  other repository table names, and the table is created by the STEP 5 statement
+  itself (no 01 dependency; CLUSTER BY / OPTIONS keep it self-describing).
+  Difference vs the on-demand 09: registry-excluded objects (`NOT_REGISTERED`) are
+  not in the registry and so are absent from this table; 09 still surfaces them by
+  re-scanning INFORMATION_SCHEMA. SQL-only; the engine bundle is unchanged. Not yet
+  validated against BigQuery.
+
 - Parsed a FROM-position table-valued function call (e.g. `EXTERNAL_QUERY`) as an
   opaque source instead of failing. A job SQL of the form
   `FROM EXTERNAL_QUERY('conn', '''SELECT ...''') AS a` produced "Source discovery

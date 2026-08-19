@@ -38,6 +38,14 @@
 -- Read-only report; not part of the daily pipeline. Run it on demand. It only
 -- reads INFORMATION_SCHEMA and the lineage registry; it writes nothing.
 --
+-- PERSISTED TWIN: 03_run_daily_lineage_pipeline.sql STEP 5 writes an equivalent
+-- snapshot to the repository table `<prefix>t_lineage_unanalyzed_definition<suffix>`
+-- at the end of every run (built from the registry, so cheap). That table does NOT
+-- include registry-excluded objects (coverage_reason = NOT_REGISTERED), because
+-- they never enter the registry. This on-demand report DOES surface them, by
+-- re-scanning INFORMATION_SCHEMA -- run it when you need the NOT_REGISTERED set or
+-- an up-to-the-second view without waiting for the pipeline.
+--
 -- CAVEATS:
 --   1. @@location must match the region of the target project's objects AND the
 --      lineage repository (the query joins region INFORMATION_SCHEMA to the

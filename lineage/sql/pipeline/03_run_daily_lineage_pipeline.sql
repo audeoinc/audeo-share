@@ -257,6 +257,10 @@ DECLARE table_direct_dependency STRING;
 DECLARE table_impact STRING;
 DECLARE table_diagnostic STRING;
 DECLARE table_job_registry STRING;
+-- STEP 5 snapshot: currently-existing objects not covered by analysis (report
+-- table, full-refreshed at the end of each run). Not part of render_dynamic_sql's
+-- fixed placeholder set; STEP 5 addresses it by a directly-built qualified name.
+DECLARE table_unanalyzed_definition STRING;
 
 DECLARE repo_tables STRUCT<
   def_registry STRING,
@@ -306,6 +310,9 @@ SET table_impact =
   table_name_prefix || 't_' || 'lineage_impact' || table_name_suffix;
 SET table_diagnostic =
   table_name_prefix || 't_' || 'lineage_diagnostic' || table_name_suffix;
+SET table_unanalyzed_definition =
+  table_name_prefix || 't_' || 'lineage_unanalyzed_definition'
+    || table_name_suffix;
 
 ASSERT REGEXP_CONTAINS(table_definition_registry, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_definition_registry name.';
@@ -317,6 +324,8 @@ ASSERT REGEXP_CONTAINS(table_diagnostic, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_diagnostic name.';
 ASSERT REGEXP_CONTAINS(table_job_registry, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_job_registry name.';
+ASSERT REGEXP_CONTAINS(table_unanalyzed_definition, r'^[A-Za-z0-9_-]+$')
+AS 'Invalid table_unanalyzed_definition name.';
 
 SET repo_tables = STRUCT(
   table_definition_registry AS def_registry,
@@ -3380,6 +3389,100 @@ IF has_analysis_work OR orphan_direct_dep_deleted > 0 THEN
 END;
 
 END IF;  -- has_analysis_work OR orphan_direct_dep_deleted > 0
+
+-- ============================================================================
+-- STEP 5: Refresh the unanalyzed-object snapshot (report table)
+-- ============================================================================
+-- Persists the on-demand 09 report as a table, rebuilt (CREATE OR REPLACE) at the
+-- very end of every run so it never piles up. Rows are the currently-existing
+-- (is_active) registry objects that are NOT fully covered by analysis -- i.e.
+-- NOT (analysis_status is COMPLETED / COMPLETED_WITH_WARNINGS AND the last
+-- analyzed definition equals the current definition_hash) -- each tagged with a
+-- coverage_reason. Built straight from the definition registry, whose
+-- definition_text / definition_hash / analysis_status are already synchronized by
+-- STEP 1-2, so this adds no INFORMATION_SCHEMA re-scan. Ephemeral
+-- (rotating / temporary-destination) objects are excluded, matching the
+-- "currently-existing persistent object" scope. Deduped by definition_hash (one
+-- row per distinct SQL). Runs unconditionally (outside the STEP 4 gate) so the
+-- snapshot always reflects the latest registry state.
+--
+-- NOTE: objects dropped at the registry-exclusion stage are not in the registry,
+-- so they are not listed here. The on-demand
+-- sql/maintenance/09_unanalyzed_object_definitions.sql surfaces those too
+-- (coverage_reason = NOT_REGISTERED), by re-scanning INFORMATION_SCHEMA.
+--
+-- The table is not part of render_dynamic_sql's fixed __T_*__ placeholders; its
+-- qualified name is built directly (backtick-quoted per the team rule). It is
+-- created here by CREATE OR REPLACE (no 01 dependency); the CLUSTER BY / OPTIONS
+-- keep it self-describing.
+SELECT '===== STEP 5: refresh unanalyzed-object snapshot =====' AS processing_step;
+EXECUTE IMMEDIATE FORMAT(
+  """
+  CREATE OR REPLACE TABLE `%s`
+  CLUSTER BY object_project, object_dataset, object_name
+  OPTIONS (
+    description = 'Snapshot of currently-existing objects (Views and generated tables) not covered by lineage analysis. Rebuilt at the end of each daily pipeline run; deduped by definition_hash. See sql/maintenance/09 for the on-demand variant (which also lists registry-excluded objects).'
+  )
+  AS
+  WITH not_covered AS (
+    SELECT
+      object_project,
+      object_dataset,
+      object_name,
+      object_type,
+      generation_type,
+      definition_source,
+      source_job_id,
+      source_job_time,
+      analysis_status,
+      last_analyzed_hash,
+      is_active,
+      last_seen_at,
+      last_analyzed_at,
+      definition_hash,
+      definition_text,
+      CASE
+        WHEN analysis_status IS NULL THEN 'REGISTERED_NOT_YET_ANALYZED'
+        WHEN analysis_status NOT IN ('COMPLETED', 'COMPLETED_WITH_WARNINGS')
+          THEN 'ANALYSIS_' || analysis_status
+        ELSE 'DEFINITION_CHANGED_NOT_REANALYZED'
+      END AS coverage_reason
+    FROM `%s`
+    WHERE is_active = TRUE
+      AND (is_ephemeral IS NULL OR is_ephemeral = FALSE)
+      -- Not fully covered. NULL-safe via IS NOT DISTINCT FROM so a COMPLETED row
+      -- with a NULL last_analyzed_hash is surfaced, not silently dropped.
+      AND NOT (
+        analysis_status IN ('COMPLETED', 'COMPLETED_WITH_WARNINGS')
+        AND last_analyzed_hash IS NOT DISTINCT FROM definition_hash
+      )
+  )
+  SELECT
+    object_project,
+    object_dataset,
+    object_name,
+    object_type,
+    generation_type,
+    definition_source,
+    coverage_reason,
+    analysis_status,
+    source_job_id,
+    source_job_time,
+    is_active,
+    last_seen_at,
+    last_analyzed_at,
+    definition_hash,
+    definition_text,
+    CURRENT_TIMESTAMP() AS refreshed_at
+  FROM not_covered
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY definition_hash
+    ORDER BY object_type, source_job_time DESC NULLS LAST
+  ) = 1
+  """,
+  FORMAT('%s.%s.%s', repository_project_id, repository_dataset, table_unanalyzed_definition),
+  FORMAT('%s.%s.%s', repository_project_id, repository_dataset, table_definition_registry)
+);
 
 -- ============================================================================
 -- PIPELINE SUMMARY
