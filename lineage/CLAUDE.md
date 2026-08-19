@@ -104,6 +104,13 @@ npm test                        # build + verify:bundle + test:release を一括
   JOBS の重複除去はフィンガープリント方式（一時/ローテーション/期限付き宛先は
   代表 1 件に集約、永続宛先は宛先ごとに保持）。ephemeral 判定＝宛先が実在し、かつ
   テーブル expiration が無いもの以外。
+  **スクリプト変数対応**：BigQuery script の子 SELECT/CTAS は DECLARE 文脈を持たず
+  変数 `aaa` が列と区別できない。STEP 2 が同一 JOBS スキャンで親 SCRIPT も読み、
+  `parent_job_id` 経由で `DECLARE` 名を抽出→レジストリの `script_variables ARRAY<STRING>`
+  列に保存（既存デプロイは `ALTER ADD COLUMN` で移行）。STEP 3 が discovery accumulator
+  経由で解析 UDF の options に `script_variables` を渡し、エンジンは「非修飾かつ列解決
+  不可」な識別子が変数集合にあれば opaque 値扱い（列優先維持・修飾は対象外）。位置
+  パラメータ `?` と名前付き `@param` はレキサが PARAMETER トークンとして処理。
 
 ## 7. 現在地
 

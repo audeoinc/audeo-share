@@ -1,5 +1,29 @@
 # 1.5.0-032
 
+- Wired the pipeline half of script-variable handling (case X: persist on the
+  registry). `01_setup_lineage_environment.sql` adds a nullable
+  `script_variables ARRAY<STRING>` column to the definition registry (with an
+  `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migration note for existing
+  deployments, since the CREATE is destructive). `03_run_daily_lineage_pipeline.sql`
+  STEP 2 now, in the SAME `INFORMATION_SCHEMA.JOBS_BY_PROJECT` scan, also reads
+  parent `SCRIPT` jobs (they have no destination table, so the scan's WHERE was
+  widened; children still require a destination) and captures `parent_job_id`. From
+  those it builds `script_declared_variables` (DECLAREd names per SCRIPT, extracted
+  with `REGEXP_EXTRACT_ALL(query, r'(?i)\bDECLARE\s+(<ident-list>)')` and split on
+  commas, restricted to scripts that are actually a `parent_job_id` of a collected
+  child) and `job_script_variables` (child job → its parent's variable names). The
+  names ride into `latest_generated_table_definitions` via a `job_id` join and are
+  MERGEd into the registry's new column (UPDATE uses
+  `COALESCE(source, target)` so an older representative not re-collected this run
+  never erases a stored value). STEP 3 threads `script_variables` from the registry
+  through the discovery accumulator (`changed_definitions_to_analyze` →
+  `all_changed_with_discovery` → per-dataset read → `batch_analysis_input`) and adds
+  it to the per-object analysis-UDF options STRUCT, so the engine (previous entry)
+  treats a script variable as an opaque value rather than a missing column. Only
+  child statements of a script carry values; Views and non-script jobs stay NULL
+  (engine no-op). SQL-only; the engine bundle is unchanged. Not yet validated
+  against BigQuery.
+
 - Added a `script_variables` analysis option so a BigQuery multi-statement script's
   child statement no longer false-fails on the parent's variables. A script like
   `DECLARE aaa STRING; SET aaa='20250818'; SELECT * FROM t WHERE dt = aaa` records

@@ -799,6 +799,7 @@ BEGIN
     SELECT
       project_id,
       job_id,
+      parent_job_id,
       creation_time,
       start_time,
       end_time,
@@ -814,14 +815,22 @@ BEGIN
     )
       AND creation_time < CURRENT_TIMESTAMP()
       -- Fixed correctness conditions (do not parameterize): only successful,
-      -- completed QUERY jobs that produced a destination table.
+      -- completed QUERY jobs.
       AND job_type = 'QUERY'
       AND state = 'DONE'
       AND error_result IS NULL
       AND query IS NOT NULL
-      AND destination_table IS NOT NULL
-      -- Parameterized: statement types to collect (collected_statement_types).
-      AND statement_type IN UNNEST(@statement_types)
+      AND (
+        -- Collectable child statements: produced a destination table and are of a
+        -- collected statement type (SELECT / CTAS).
+        (
+          destination_table IS NOT NULL
+          AND statement_type IN UNNEST(@statement_types)
+        )
+        -- Parent SCRIPT jobs (no single destination) captured in the SAME scan so
+        -- STEP 2 can extract their DECLAREd variable names for child statements.
+        OR statement_type = 'SCRIPT'
+      )
   """;
 
   EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
@@ -833,6 +842,49 @@ BEGIN
   USING
     lookback_days AS lookback_days,
     collected_statement_types AS statement_types;
+
+  -- Parent-script variable extraction. A child SELECT / CTAS that is a statement
+  -- of a BigQuery multi-statement script carries no DECLARE / SET context in its
+  -- own query text, so a reference to a script variable (e.g. WHERE dt = aaa)
+  -- looks like a column and would be reported as a missing column. Extract the
+  -- DECLAREd variable names from each parent SCRIPT (captured in the same JOBS
+  -- scan above) so STEP 3 can pass them to the analysis UDF as script_variables.
+  -- Only scripts that are actually a parent_job_id of a collected child are
+  -- processed. REGEXP_EXTRACT_ALL returns the captured identifier list of each
+  -- DECLARE; a single DECLARE may list several names (DECLARE a, b, c ...), so the
+  -- list is split on commas. Names are lower-cased (the engine matches
+  -- case-insensitively).
+  CREATE OR REPLACE TEMP TABLE script_declared_variables AS
+  SELECT
+    job_id,
+    ARRAY(
+      SELECT DISTINCT TRIM(LOWER(name))
+      FROM UNNEST(REGEXP_EXTRACT_ALL(
+        query,
+        r'(?i)\bDECLARE\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)'
+      )) AS decl_list,
+      UNNEST(SPLIT(decl_list, ',')) AS name
+      WHERE TRIM(name) != ''
+    ) AS script_variables
+  FROM raw_generated_table_jobs
+  WHERE statement_type = 'SCRIPT'
+    AND job_id IN (
+      SELECT DISTINCT parent_job_id
+      FROM raw_generated_table_jobs
+      WHERE parent_job_id IS NOT NULL
+        AND destination_table IS NOT NULL
+    );
+
+  -- Map each collected child job to its parent script's declared variables.
+  CREATE OR REPLACE TEMP TABLE job_script_variables AS
+  SELECT
+    child.job_id,
+    sd.script_variables
+  FROM raw_generated_table_jobs AS child
+  JOIN script_declared_variables AS sd
+    ON sd.job_id = child.parent_job_id
+  WHERE child.destination_table IS NOT NULL
+    AND child.parent_job_id IS NOT NULL;
 
   CREATE OR REPLACE TEMP TABLE recent_generated_table_jobs AS
   WITH target_jobs AS (
@@ -865,6 +917,9 @@ BEGIN
       ) AS is_scheduled_query,
       user_email IN UNNEST(dag_service_accounts) AS is_dag
     FROM raw_generated_table_jobs
+    -- Children only: SCRIPT rows (no destination) were pulled into the scan solely
+    -- for parent-variable extraction and must not enter the generated-table flow.
+    WHERE destination_table IS NOT NULL
   ),
   classified_jobs AS (
     SELECT
@@ -1062,6 +1117,7 @@ BEGIN
     WITH classified AS (
       SELECT
         jobs.*,
+        svars.script_variables AS script_variables,
         (
           target_table.table_name IS NOT NULL
           AND target_table.expiration_timestamp IS NULL
@@ -1071,6 +1127,10 @@ BEGIN
         ON LOWER(target_table.table_catalog) = LOWER(jobs.destination_project)
         AND LOWER(target_table.table_schema) = LOWER(jobs.destination_dataset)
         AND LOWER(target_table.table_name) = LOWER(jobs.destination_table)
+      -- Parent-script variables for jobs collected in THIS run (older jobs miss;
+      -- the MERGE below COALESCEs so a miss never erases a stored value).
+      LEFT JOIN job_script_variables AS svars
+        ON svars.job_id = jobs.job_id
     )
     SELECT
       IF(destination_is_persistent, destination_project, @target_project)
@@ -1093,7 +1153,8 @@ BEGIN
       job_id AS source_job_id,
       creation_time AS source_job_time,
       user_email AS source_user_email,
-      labels AS labels
+      labels AS labels,
+      script_variables AS script_variables
     FROM classified
     QUALIFY ROW_NUMBER() OVER (
       PARTITION BY
@@ -1145,6 +1206,11 @@ BEGIN
           target.source_job_time = source.source_job_time,
           target.source_user_email = source.source_user_email,
           target.labels = source.labels,
+          -- Preserve a previously-stored value when this run did not re-collect the
+          -- job (older representative -> source.script_variables is NULL).
+          target.script_variables = COALESCE(
+            source.script_variables, target.script_variables
+          ),
           target.is_changed = (
             target.is_changed
             OR target.definition_hash IS DISTINCT FROM source.definition_hash
@@ -1174,6 +1240,7 @@ BEGIN
           source_job_time,
           source_user_email,
           labels,
+          script_variables,
           is_changed,
           is_active,
           analysis_status,
@@ -1199,6 +1266,7 @@ BEGIN
           source.source_job_time,
           source.source_user_email,
           source.labels,
+          source.script_variables,
           TRUE,
           TRUE,
           NULL,
@@ -1485,6 +1553,7 @@ BEGIN
     generation_type STRING,
     definition_text STRING,
     definition_hash STRING,
+    script_variables ARRAY<STRING>,
     source_discovery_json STRING
   );
   CREATE OR REPLACE TEMP TABLE referenced_source_datasets (dataset_name STRING);
@@ -1508,7 +1577,8 @@ BEGIN
       object_type,
       generation_type,
       definition_text,
-      definition_hash
+      definition_hash,
+      script_variables
     FROM
       `__T_DEF_REGISTRY__`
     WHERE is_active = TRUE
@@ -1562,6 +1632,7 @@ BEGIN
       generation_type,
       definition_text,
       definition_hash,
+      script_variables,
       `__UDF__`(
         definition_text,
         '[]',
@@ -1582,11 +1653,13 @@ BEGIN
   -- (the dataset segment -- second-to-last -- of each discovered source name).
   INSERT INTO all_changed_with_discovery (
     object_project, object_dataset, object_name, object_type,
-    generation_type, definition_text, definition_hash, source_discovery_json
+    generation_type, definition_text, definition_hash, script_variables,
+    source_discovery_json
   )
   SELECT
     object_project, object_dataset, object_name, object_type,
-    generation_type, definition_text, definition_hash, source_discovery_json
+    generation_type, definition_text, definition_hash, script_variables,
+    source_discovery_json
   FROM changed_definitions_with_discovery;
 
   INSERT INTO referenced_source_datasets (dataset_name)
@@ -1745,6 +1818,7 @@ BEGIN
     generation_type,
     definition_text,
     definition_hash,
+    script_variables,
     source_discovery_json
   FROM all_changed_with_discovery
   WHERE LOWER(object_dataset) = LOWER(ds_row.ds);
@@ -2076,6 +2150,7 @@ BEGIN
         c.generation_type,
         c.definition_hash,
         c.definition_text,
+        c.script_variables,
         GENERATE_UUID() AS analysis_id,
         COALESCE(
           JSON_VALUE(c.source_discovery_json, '$.analysis.analysis_status'),
@@ -2151,7 +2226,11 @@ BEGIN
             p.physical_columns_json,
             TO_JSON_STRING(STRUCT(
               @strict_mode AS strict_mode,
-              TRUE AS compact_export
+              TRUE AS compact_export,
+              -- Parent-script DECLARE variable names (NULL/empty for non-script
+              -- objects). Lets the engine treat an unqualified script-variable
+              -- reference as an opaque value instead of a missing column.
+              p.script_variables AS script_variables
             )),
             TO_JSON_STRING(STRUCT(
               p.analysis_id AS analysis_id,

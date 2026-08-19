@@ -212,6 +212,13 @@ EXECUTE IMMEDIATE FORMAT(
     -- generated TABLEs, so a FAILED object can be traced to its DAG without
     -- joining to the job registry. NULL for Views (which have no job labels).
     labels ARRAY<STRUCT<key STRING, value STRING>>,
+    -- Variable names DECLAREd in the parent BigQuery script (resolved via the
+    -- job's parent_job_id) for JOBS-derived objects that are child statements of a
+    -- multi-statement script. Passed to the analysis UDF as script_variables so an
+    -- unqualified reference to a script variable -- which is indistinguishable from
+    -- a column in the child statement's stored SQL text -- is treated as an opaque
+    -- value instead of a missing column. NULL / empty for Views and non-script jobs.
+    script_variables ARRAY<STRING>,
     is_changed BOOL NOT NULL,
     is_active BOOL NOT NULL,
     analysis_status STRING,
@@ -229,6 +236,13 @@ EXECUTE IMMEDIATE FORMAT(
   repository_dataset_full_name,
   table_definition_registry
 );
+
+-- MIGRATION (existing deployments): this CREATE OR REPLACE recreates the registry
+-- from scratch, which is fine for a fresh setup but would drop data on an existing
+-- repository. To add the script_variables column in place without losing data, run
+-- once instead of re-running this CREATE:
+--   ALTER TABLE `<project>.<dataset>.<m_lineage_definition_registry>`
+--     ADD COLUMN IF NOT EXISTS script_variables ARRAY<STRING>;
 
 EXECUTE IMMEDIATE FORMAT(
   '''
