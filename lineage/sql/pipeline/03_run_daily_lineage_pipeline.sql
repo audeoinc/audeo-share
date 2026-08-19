@@ -917,9 +917,15 @@ BEGIN
       ) AS is_scheduled_query,
       user_email IN UNNEST(dag_service_accounts) AS is_dag
     FROM raw_generated_table_jobs
-    -- Children only: SCRIPT rows (no destination) were pulled into the scan solely
-    -- for parent-variable extraction and must not enter the generated-table flow.
+    -- Children only. SCRIPT rows were pulled into the scan solely for parent-
+    -- variable extraction and must never enter the generated-table / analysis flow.
+    -- Exclude them by statement_type (a SCRIPT is never a collected type), not just
+    -- by destination: some SCRIPT jobs DO carry a destination_table (e.g. a script
+    -- whose single effective statement is a CTAS), which would otherwise slip
+    -- through and be "analyzed" as a whole multi-statement script -> query-parser
+    -- "top-level SELECT not found".
     WHERE destination_table IS NOT NULL
+      AND statement_type IN UNNEST(collected_statement_types)
   ),
   classified_jobs AS (
     SELECT

@@ -1,5 +1,22 @@
 # 1.5.0-032
 
+- Hardened the STEP 2 children filter so a parent `SCRIPT` job is never analyzed.
+  The script-variable work widened the JOBS scan to also read `SCRIPT` jobs (for
+  DECLARE extraction), and excluded them from the generated-table flow with
+  `destination_table IS NOT NULL`. But some `SCRIPT` jobs DO carry a
+  `destination_table` (e.g. a script whose single effective statement is a CTAS),
+  so such a script slipped into the flow, was registered as a generated table, and
+  was handed to the analysis UDF as a whole multi-statement script — producing a
+  query-parser "top-level SELECT not found" failure. The `target_jobs` filter now
+  also requires `statement_type IN UNNEST(collected_statement_types)` (a `SCRIPT`
+  is never a collected type), so scripts are used only for variable extraction and
+  never registered or analyzed. Self-healing: the child SELECT / CTAS statement was
+  always collected, so once the script is excluded the child becomes the
+  representative for its destination and the next run overwrites the registry row's
+  `definition_text` with the single statement (re-analyzed cleanly); ephemeral
+  variants age out by fingerprint recency. SQL-only; the engine bundle is
+  unchanged. Not yet validated against BigQuery.
+
 - Wired the pipeline half of script-variable handling (case X: persist on the
   registry). `01_setup_lineage_environment.sql` adds a nullable
   `script_variables ARRAY<STRING>` column to the definition registry (with an
