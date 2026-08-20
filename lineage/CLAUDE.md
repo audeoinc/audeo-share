@@ -137,9 +137,9 @@ npm test                        # build + verify:bundle + test:release を一括
   render の固定枠外なので直接組み立て（`column_usage_fqn`）、既存デプロイ向けに 03 が
   `CREATE TABLE IF NOT EXISTS` で自己修復（正本スキーマは 01）。下流列の「大元と経由」は
   既存 impact（`origin/impacted`＋`dependency_path`）で辿れるため新規実装なし。
-  **利用箇所×深さ（v_lineage_column_usage_impact）**：利用箇所の「深さ(rank)」は
+  **利用箇所×深さ（vw_t_lineage_column_usage_impact）**：利用箇所の「深さ(rank)」は
   原点カラム基準の相対値（同じ利用箇所でも原点次第で深さが変わる）ため、usage 表に
-  単一 rank を持たせず、ビュー `v_lineage_column_usage_impact` でクエリ時結合。直接参照＝深さ1、
+  単一 rank を持たせず、ビュー `vw_t_lineage_column_usage_impact` でクエリ時結合。直接参照＝深さ1、
   impact 経由＝`impact_rank+1`、`dependency_path` で経由も表示。impact は STEP 4 で
   毎回全置換のため常に最新スナップショット（フィルタ不要）。**ビューは 01 setup が
   テーブル作成直後に併せて作成**（`t_lineage_column_usage`／`t_lineage_impact` の後）。

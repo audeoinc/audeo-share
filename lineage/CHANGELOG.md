@@ -33,7 +33,7 @@
   write path can fail on it. SQL-only; the engine bundle is unchanged. Not yet
   validated against BigQuery.
 
-- Added the `v_lineage_column_usage_impact` view (created by 01 setup, right after
+- Added the `vw_t_lineage_column_usage_impact` view (created by 01 setup, right after
   the `t_lineage_column_usage` / `t_lineage_impact` tables it reads) that joins the
   column usage index to the impact graph, so a Looker report can pick an ORIGIN
   column and see every downstream usage site with a DEPTH like impact_rank, plus

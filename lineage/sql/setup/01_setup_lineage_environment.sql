@@ -124,10 +124,12 @@ SET table_diagnostic =
 SET table_column_usage =
   bootstrap_table_name_prefix || 't_' || 'lineage_column_usage'
     || bootstrap_table_name_suffix;
--- View marker is 'v_'. Joins the column usage index to the impact graph to give
--- each downstream usage a depth (see the CREATE VIEW near the table creations).
+-- View naming convention: prefix + 'vw_' + marker + canonical base + suffix, where
+-- the marker is 't_' / 'm_' (transaction / master) like the tables. This view is
+-- built over the transaction tables t_lineage_column_usage / t_lineage_impact, so
+-- its marker is 't_' -> vw_t_lineage_column_usage_impact.
 SET view_column_usage_impact =
-  bootstrap_table_name_prefix || 'v_' || 'lineage_column_usage_impact'
+  bootstrap_table_name_prefix || 'vw_' || 't_' || 'lineage_column_usage_impact'
     || bootstrap_table_name_suffix;
 
 ASSERT REGEXP_CONTAINS(table_definition_registry, r'^[A-Za-z0-9_-]+$')
