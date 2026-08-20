@@ -139,7 +139,7 @@ npm test                        # build + verify:bundle + test:release を一括
   既存 impact（`origin/impacted`＋`dependency_path`）で辿れるため新規実装なし。
   **利用箇所×深さ（v_lineage_column_usage_impact）**：利用箇所の「深さ(rank)」は
   原点カラム基準の相対値（同じ利用箇所でも原点次第で深さが変わる）ため、usage 表に
-  単一 rank を持たせず、`sql/maintenance/10_*` のビューでクエリ時結合。直接参照＝深さ1、
+  単一 rank を持たせず、ビュー `v_lineage_column_usage_impact` でクエリ時結合。直接参照＝深さ1、
   impact 経由＝`impact_rank+1`、`dependency_path` で経由も表示。impact は STEP 4 で
   毎回全置換のため常に最新スナップショット（フィルタ不要）。**ビューは 01 setup が
   テーブル作成直後に併せて作成**（`t_lineage_column_usage`／`t_lineage_impact` の後）。
@@ -150,6 +150,12 @@ npm test                        # build + verify:bundle + test:release を一括
   'SCHEDULED_QUERY'/'DAG' 等＝生成テーブル Job）。値は元々診断ステージングを流れており
   永続化しただけ。書込みは 03 STEP 3 の3系統（UDF診断・非publishableマーカー・
   pre-analysis失敗）と 06 単体経路。
+  **absent 判定の鮮度（STEP 3）**：publish 可否分類 `batch_object_source_flags` の存在
+  判定は、STEP 1 スナップショット `current_target_tables` ではなく、STEP 3 で列メタと
+  同時・同一参照データセット範囲で採る `current_referenced_tables`（フレッシュな TABLES
+  スキャン）を使う。STEP1→STEP3 の間に drop されたソーステーブルが「在るが列無し＝
+  coverage gap→FAILED」と誤判定される窓を塞ぐ（drop 済みは absent＝publish 可で警告抑制）。
+  実在するが列が空の真の coverage gap は従来どおり検出。
 
 ## 7. 現在地
 

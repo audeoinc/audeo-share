@@ -1829,6 +1829,56 @@ BEGIN
   );
 
   -- --------------------------------------------------------------------------
+  -- Fresh TABLES existence set, taken HERE (STEP 3) alongside the column
+  -- metadata and over the SAME referenced source datasets. The publishability
+  -- classifier (batch_object_source_flags) uses this, NOT the STEP 1
+  -- current_target_tables snapshot: a source table dropped between STEP 1 and
+  -- STEP 3 is still listed in that older snapshot, which would make it look
+  -- "present but uncollected" (a coverage gap -> object FAILED) instead of
+  -- "absent" (a dropped table -> object publishable, warning suppressed). Reading
+  -- existence at the same moment as the columns closes that window, so a table
+  -- that no longer exists when its columns are scanned is correctly treated as
+  -- absent. Same scope as current_target_columns (referenced & accessible source
+  -- datasets); the typed empty fallback covers "nothing referenced".
+  -- --------------------------------------------------------------------------
+  SET tables_union_sql = (
+    SELECT STRING_AGG(
+      FORMAT(
+        'SELECT LOWER(table_catalog) AS table_catalog, '
+        || 'LOWER(table_schema) AS table_schema, '
+        || 'LOWER(table_name) AS table_name '
+        || 'FROM `%s.%s.INFORMATION_SCHEMA.TABLES`',
+        project_id, dataset_id
+      ),
+      ' UNION ALL '
+    )
+    FROM (
+      SELECT DISTINCT sd.project_id, sd.dataset_id
+      FROM source_datasets AS sd
+      WHERE LOWER(sd.dataset_id) IN (
+        SELECT LOWER(dataset_name)
+        FROM referenced_source_datasets
+        WHERE dataset_name IS NOT NULL
+      )
+    )
+  );
+  SET tables_union_sql = COALESCE(
+    tables_union_sql,
+    (SELECT FORMAT(
+       'SELECT LOWER(table_catalog) AS table_catalog, '
+       || 'LOWER(table_schema) AS table_schema, '
+       || 'LOWER(table_name) AS table_name '
+       || 'FROM `%s.%s.INFORMATION_SCHEMA.TABLES` WHERE FALSE',
+       project_id, dataset_id
+     )
+     FROM source_datasets LIMIT 1)
+  );
+  EXECUTE IMMEDIATE FORMAT(
+    'CREATE OR REPLACE TEMP TABLE current_referenced_tables AS %s',
+    tables_union_sql
+  );
+
+  -- --------------------------------------------------------------------------
   -- Per-dataset analysis loop, over only the datasets with changed objects.
   --
   -- The JavaScript lineage UDF is a per-row scalar function; running it across
@@ -2391,24 +2441,21 @@ BEGIN
       ) AS source_row
       WHERE JSON_VALUE(source_row, '$') IS NOT NULL
     ),
-    -- exists_in_tables must be judged on the SAME dataset scope that column
-    -- metadata was collected for. current_target_tables covers every source
-    -- dataset (STEP 2 needs it), but current_target_columns is scoped to the
-    -- referenced source datasets (option D). Restrict the existence check to those
-    -- same datasets so a source whose dataset was NOT column-scanned is treated as
-    -- absent (has_absent_source), not as present-but-uncollected. Without this,
-    -- the wider TABLES scope makes a source that exists in an un-scanned dataset
-    -- look present-but-uncollected -> object non-publishable -> its absent-source
-    -- not-found WARNINGS leak into lineage_diagnostic. Genuine coverage gaps within
-    -- referenced datasets (table present, columns empty) are still flagged.
+    -- exists_in_tables must be judged on the SAME dataset scope AND the SAME
+    -- moment that column metadata was collected for. current_referenced_tables is
+    -- a fresh TABLES scan taken in STEP 3 alongside current_target_columns, over
+    -- the referenced source datasets (option D). Using it (not the STEP 1
+    -- current_target_tables snapshot) means: a source whose dataset was NOT
+    -- column-scanned is treated as absent (has_absent_source), AND a source table
+    -- dropped between STEP 1 and STEP 3 is treated as absent rather than
+    -- present-but-uncollected. Otherwise such a source looks like a coverage gap
+    -- -> object non-publishable -> its absent-source not-found WARNINGS leak into
+    -- lineage_diagnostic (and the object FAILs transiently until the next run).
+    -- Genuine coverage gaps within referenced datasets (table present at scan
+    -- time, columns empty) are still flagged.
     tables AS (
       SELECT DISTINCT table_catalog, table_schema, table_name
-      FROM current_target_tables
-      WHERE LOWER(table_schema) IN (
-        SELECT LOWER(dataset_name)
-        FROM referenced_source_datasets
-        WHERE dataset_name IS NOT NULL
-      )
+      FROM current_referenced_tables
     ),
     cols AS (
       SELECT DISTINCT table_catalog, table_schema, table_name

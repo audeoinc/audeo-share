@@ -1,5 +1,24 @@
 # 1.5.0-032
 
+- Closed a timing window that made an object transiently FAIL when a source table
+  it references is dropped mid-run. The publishability classifier
+  (`batch_object_source_flags`) judged source existence against
+  `current_target_tables`, a snapshot taken in STEP 1, while column metadata is
+  collected in STEP 3. A table dropped between the two scans still appeared in the
+  STEP 1 snapshot, so it looked "present but with no columns" (a coverage gap ->
+  object non-publishable -> FAILED, and its absent-source "metadata not found"
+  WARNING was written to lineage_diagnostic), even though the table no longer
+  existed; the next run self-healed once it was gone from the snapshot too. STEP 3
+  now builds `current_referenced_tables`, a fresh `INFORMATION_SCHEMA.TABLES` scan
+  taken alongside the column metadata and over the same referenced source
+  datasets, and the classifier's existence check reads it instead of the STEP 1
+  snapshot. A table that no longer exists when its columns are scanned is now
+  correctly treated as absent (publishable, warning suppressed); genuine coverage
+  gaps (table present at scan time, columns empty) are still flagged. Existence and
+  columns are now read at effectively the same moment, shrinking the window to the
+  seconds between the STEP 3 TABLES and COLUMNS scans. SQL-only; the engine bundle
+  is unchanged. Not yet validated against BigQuery.
+
 - Added a `generation_type` column to the diagnostic table (`t_lineage_diagnostic`)
   so a reader can tell whether a diagnostic's SQL is a View definition or a
   generated-table job SQL, without joining the registry. `object_type` only says
