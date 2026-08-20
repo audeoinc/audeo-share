@@ -43,7 +43,11 @@
   table. The view is the UNION of: direct references of the origin column
   (depth = 1) from `t_lineage_column_usage`; and, joining `t_lineage_impact`
   (impacted column = usage source column), references of columns the origin impacts
-  (depth = impact_rank + 1), carrying `dependency_path` for the route. Impact is
+  (depth = impact_rank + 1), carrying `dependency_path` for the route. Each row
+  also exposes `usage_definition_hash` -- the `definition_hash` of the object that
+  contains the reference -- as a join key to pull that object's actual SQL (e.g.
+  from `m_lineage_definition_registry`) when the metadata and line number are not
+  enough to understand a usage. Impact is
   fully replaced each STEP 4 run, so the view always reflects the current snapshot
   with no snapshot filter. To (re)create just the view on an existing deployment
   (or after a table-name change), run 01's `CREATE OR REPLACE VIEW` block on its

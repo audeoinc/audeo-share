@@ -495,6 +495,10 @@ EXECUTE IMMEDIATE FORMAT(
     u.object_name         AS usage_object_name,
     u.object_type         AS usage_object_type,
     u.generation_type     AS usage_generation_type,
+    -- definition_hash of the object that CONTAINS the reference. Use it as the key
+    -- to pull that object's actual SQL (e.g. from m_lineage_definition_registry)
+    -- when the metadata + line number are not enough to understand the usage.
+    u.definition_hash     AS usage_definition_hash,
     u.usage_type,
     u.reference_name,
     u.line_number,
@@ -523,6 +527,7 @@ EXECUTE IMMEDIATE FORMAT(
     u.object_name         AS usage_object_name,
     u.object_type         AS usage_object_type,
     u.generation_type     AS usage_generation_type,
+    u.definition_hash     AS usage_definition_hash,
     u.usage_type,
     u.reference_name,
     u.line_number,

@@ -140,7 +140,10 @@ npm test                        # build + verify:bundle + test:release を一括
   **利用箇所×深さ（vw_t_lineage_column_usage_impact）**：利用箇所の「深さ(rank)」は
   原点カラム基準の相対値（同じ利用箇所でも原点次第で深さが変わる）ため、usage 表に
   単一 rank を持たせず、ビュー `vw_t_lineage_column_usage_impact` でクエリ時結合。直接参照＝深さ1、
-  impact 経由＝`impact_rank+1`、`dependency_path` で経由も表示。impact は STEP 4 で
+  impact 経由＝`impact_rank+1`、`dependency_path` で経由も表示。各行に
+  `usage_definition_hash`（参照を含む object の `definition_hash`）を露出し、メタ＋行番号
+  で足りない時に実SQL（`m_lineage_definition_registry` 等）を引く join key に使える。
+  impact は STEP 4 で
   毎回全置換のため常に最新スナップショット（フィルタ不要）。**ビューは 01 setup が
   テーブル作成直後に併せて作成**（`t_lineage_column_usage`／`t_lineage_impact` の後）。
   既存デプロイでビューだけ追加/更新したい場合は 01 の該当 `CREATE OR REPLACE VIEW`
