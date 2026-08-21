@@ -17,8 +17,8 @@ SET @@location = 'asia-northeast1';
 -- ----------------------------------------------------------------------------
 -- Variables are grouped by purpose below; each group is labeled with a one-line
 -- header. Full descriptions follow the block under "Variable notes".
--- GCP project (auto-detected in [C])
-DECLARE bootstrap_default_project_id STRING;
+-- GCP project: auto-detected at runtime; its DECLARE lives in [B] (pin it there
+-- only to run against a different project).
 -- Datasets (repository / UDF)
 DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository';
 DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';
@@ -27,12 +27,6 @@ DECLARE bootstrap_udf_library_uri STRING DEFAULT
   'gs://YOUR_BUCKET/YOUR_PATH/lineage_udf_bundle.js';
 --
 -- Variable notes (keyed by name):
---   bootstrap_default_project_id
---     Single source of truth for the GCP project. The repository, the UDFs, and
---     the target all live in one project. The role-specific bootstrap_*_project_id
---     variables live in [C] and take this. Auto-detected from
---     INFORMATION_SCHEMA.SCHEMATA in [C] (the project the job runs in); to pin it,
---     set a literal there.
 --   bootstrap_repository_dataset / bootstrap_udf_dataset
 --     Repository dataset and UDF dataset (their *_project_id are in [C]).
 --   bootstrap_udf_library_uri
@@ -41,6 +35,13 @@ DECLARE bootstrap_udf_library_uri STRING DEFAULT
 -- ----------------------------------------------------------------------------
 -- [B] BEHAVIOR OPTIONS -- keep aligned with 01 / 03; defaults are safe
 -- ----------------------------------------------------------------------------
+-- Single source of truth for the GCP project. Declared here (not in [A]) because
+-- it is normally not set by hand: it is auto-detected in [C] from
+-- INFORMATION_SCHEMA.SCHEMATA (the project the job runs in). To pin it, set a
+-- literal in [C]. The repository, the UDFs, and the target all live in this one
+-- project; the role-specific bootstrap_*_project_id variables live in [C] and take
+-- this.
+DECLARE bootstrap_default_project_id STRING;
 -- Analysis UDF name: assembled in [C] as udf_prefix + 'lnge_' + base + udf_suffix
 -- (keep in step with 01). Routine names allow only letters/digits/'_' (no '-').
 DECLARE bootstrap_udf_name_prefix STRING DEFAULT '';

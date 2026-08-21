@@ -70,8 +70,8 @@ BEGIN
   -- --------------------------------------------------------------------------
   -- Variables are grouped by purpose below; each group is labeled with a one-line
   -- header. Full descriptions follow the block under "Variable notes".
-  -- GCP project (auto-detected in [C])
-  DECLARE default_project_id STRING;
+  -- GCP project: auto-detected at runtime; its DECLARE lives in [B] (pin it there
+  -- only to run against a different project).
   -- Repository dataset & table naming
   DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
   DECLARE table_name_prefix STRING DEFAULT '';
@@ -83,11 +83,6 @@ BEGIN
   DECLARE target_dataset_exclude_patterns ARRAY<STRING> DEFAULT [];
   --
   -- Variable notes (keyed by name):
-  --   default_project_id
-  --     GCP project. The target objects (views / generated tables) and the lineage
-  --     repository share one project. Their *_project_id variables live in [C] and
-  --     take this. Auto-detected from INFORMATION_SCHEMA.SCHEMATA in [C] (the
-  --     project the job runs in); to pin it, set a literal there.
   --   repository_dataset / table_name_prefix / table_name_suffix
   --     Lineage repository dataset (holds the definition registry). Its physical
   --     registry table name is assembled from the prefix/suffix -- keep them in
@@ -106,6 +101,12 @@ BEGIN
   -- --------------------------------------------------------------------------
   -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
   -- --------------------------------------------------------------------------
+  -- GCP project. Declared here (not in [A]) because it is normally not set by hand:
+  -- it is auto-detected in [C] from INFORMATION_SCHEMA.SCHEMATA (the project the job
+  -- runs in). To pin it, set a literal in [C]. The target objects (views / generated
+  -- tables) and the lineage repository share one project; their *_project_id
+  -- variables live in [C] and take this.
+  DECLARE default_project_id STRING;
   -- Set FALSE to report only Views (skip the JOBS scan for generated tables).
   DECLARE include_generated_tables BOOL DEFAULT TRUE;
 

@@ -50,8 +50,8 @@ BEGIN
 -- ----------------------------------------------------------------------------
 -- Variables are grouped by purpose below; each group is labeled with a one-line
 -- header. Full descriptions follow the block under "Variable notes".
--- GCP project (auto-detected in [C])
-DECLARE default_project_id STRING;
+-- GCP project: auto-detected at runtime; its DECLARE lives in [B] (pin it there
+-- only to run against a different project).
 -- Datasets (repository / UDF)
 DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
 DECLARE udf_dataset STRING DEFAULT 'dataset';
@@ -94,15 +94,6 @@ DECLARE analysis_include_dataset_patterns ARRAY<STRING> DEFAULT [];
 DECLARE analysis_exclude_dataset_patterns ARRAY<STRING> DEFAULT [];
 --
 -- Variable notes (keyed by name):
---   default_project_id
---     Single source of truth for the GCP project. The repository, the analyzed
---     Views (target), and the UDFs all live in one project, so set it here once.
---     The role-specific *_project_id variables (repository / target / udf) live in
---     the [C] DERIVED section and take this; pin one of them there only in the rare
---     case its objects live in a separate project. (Physical source tables can span
---     projects and are configured separately via source_project_filters.)
---     Auto-detected from INFORMATION_SCHEMA.SCHEMATA in [C] below (the project the
---     job runs in); to pin it, set a literal there.
 --   repository_dataset / udf_dataset
 --     Repository dataset (holds the lineage_* tables) and UDF dataset (holds the
 --     analyze / fingerprint / render functions created by 01). Both live in the
@@ -206,6 +197,15 @@ DECLARE analysis_exclude_dataset_patterns ARRAY<STRING> DEFAULT [];
 -- ----------------------------------------------------------------------------
 -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
 -- ----------------------------------------------------------------------------
+-- Single source of truth for the GCP project. Declared here (not in [A]) because
+-- it is normally not set by hand: it is auto-detected in [C] from
+-- INFORMATION_SCHEMA.SCHEMATA (the project the job runs in). To pin it, set a
+-- literal in [C]. The repository, the analyzed Views (target), and the UDFs all
+-- live in this one project; the role-specific *_project_id variables (repository /
+-- target / udf) live in [C] and take this, pinned individually only in the rare
+-- case their objects live in a separate project. (Physical source tables can span
+-- projects and are configured separately via source_project_filters in [A].)
+DECLARE default_project_id STRING;
 -- UDF function names. Assembled in [C] as udf_prefix + 'lnge_' + base + udf_suffix
 -- and must match the names 01 setup created in udf_dataset; keep the udf
 -- prefix/suffix below in step with 01. Routine names allow only letters/digits/'_'

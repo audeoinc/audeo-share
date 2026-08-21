@@ -58,8 +58,8 @@ BEGIN
   -- --------------------------------------------------------------------------
   -- Variables are grouped by purpose below; each group is labeled with a one-line
   -- header. Full descriptions follow the block under "Variable notes".
-  -- GCP project (auto-detected in [C])
-  DECLARE default_project_id STRING;
+  -- GCP project: auto-detected at runtime; its DECLARE lives in [B] (pin it there
+  -- only to run against a different project).
   -- Region & datasets (repository / target / UDF)
   DECLARE job_region STRING DEFAULT 'asia-northeast1';
   DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
@@ -67,17 +67,17 @@ BEGIN
   DECLARE udf_dataset STRING DEFAULT 'dataset';
   --
   -- Variable notes (keyed by name):
-  --   default_project_id
-  --     GCP project. Repository, target, and UDFs share one project. The role-
-  --     specific *_project_id variables live in [C] and take this. Auto-detected
-  --     from INFORMATION_SCHEMA.SCHEMATA in [C] (the project the job runs in); to
-  --     pin it, set a literal there.
   --   job_region / repository_dataset / target_dataset / udf_dataset
   --     Region (must equal @@location) and the repository / target / UDF datasets.
 
   -- --------------------------------------------------------------------------
   -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
   -- --------------------------------------------------------------------------
+  -- GCP project. Declared here (not in [A]) because it is normally not set by hand:
+  -- it is auto-detected in [C] from INFORMATION_SCHEMA.SCHEMATA (the project the job
+  -- runs in). To pin it, set a literal in [C]. Repository, target, and UDFs share
+  -- one project; the role-specific *_project_id variables live in [C] and take this.
+  DECLARE default_project_id STRING;
   -- Analysis UDF name: assembled in [C] as udf_prefix + 'lnge_' + base + udf_suffix
   -- (must match 01). Routine names allow only letters/digits/'_' (no '-').
   DECLARE udf_name_prefix STRING DEFAULT '';

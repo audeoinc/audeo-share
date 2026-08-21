@@ -10,8 +10,12 @@
   follow the block under a `Variable notes:` header keyed by variable name.
   Comment/whitespace reorganization only -- every variable is still declared
   exactly once, all DECLAREs still precede the first statement, and no defaults
-  changed, so behavior is unchanged. `[B]`/`[C]` are untouched. SQL-only; the
-  engine bundle is unchanged.
+  changed, so behavior is unchanged. SQL-only; the engine bundle is unchanged.
+  Follow-up: moved the `default_project_id` (01/04: `bootstrap_default_project_id`)
+  DECLARE out of `[A]` and into `[B]`, since it is auto-detected at runtime (in
+  `[C]`) rather than set per deployment; `[A]` keeps only a one-line pointer comment
+  to it, and its full description moved to `[B]` alongside the DECLARE. Still
+  declared once and before the first statement, so behavior is unchanged.
 
 - Added a project-token substitution so a piece of the (auto-detected) project id
   can be embedded in object names. Each script (01/03/04/06/07/08/09) declares a

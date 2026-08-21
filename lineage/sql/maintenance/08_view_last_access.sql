@@ -51,8 +51,8 @@ BEGIN
   -- --------------------------------------------------------------------------
   -- Variables are grouped by purpose below; each group is labeled with a one-line
   -- header. Full descriptions follow the block under "Variable notes".
-  -- GCP project (auto-detected in [C])
-  DECLARE default_project_id STRING;
+  -- GCP project: auto-detected at runtime; its DECLARE lives in [B] (pin it there
+  -- only to run against a different project).
   -- Audit log sink (project / dataset / table)
   DECLARE audit_project_id STRING DEFAULT NULL;
   DECLARE audit_dataset STRING DEFAULT 'audit_logs';
@@ -65,11 +65,6 @@ BEGIN
   DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
   --
   -- Variable notes (keyed by name):
-  --   default_project_id
-  --     GCP project. The views (target) and the lineage repository share one
-  --     project; set it once. Their *_project_id variables live in [C] and take
-  --     this. Auto-detected from INFORMATION_SCHEMA.SCHEMATA in [C] (the project
-  --     the job runs in); to pin it, set a literal there.
   --   audit_project_id / audit_dataset / audit_table
   --     Audit log sink location (the *_data_access table). The sink can
   --     legitimately live in a separate project, so pin audit_project_id to a
@@ -88,6 +83,12 @@ BEGIN
   -- --------------------------------------------------------------------------
   -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
   -- --------------------------------------------------------------------------
+  -- GCP project. Declared here (not in [A]) because it is normally not set by hand:
+  -- it is auto-detected in [C] from INFORMATION_SCHEMA.SCHEMATA (the project the job
+  -- runs in). To pin it, set a literal in [C]. The views (target) and the lineage
+  -- repository share one project; their *_project_id variables live in [C] and take
+  -- this.
+  DECLARE default_project_id STRING;
   -- How far back to scan (days). Bounded by the sink table's retention.
   DECLARE lookback_days INT64 DEFAULT 180;
   -- Optional dataset-name regex filters on the reported views (empty = all).

@@ -34,8 +34,8 @@ SET @@location = 'asia-northeast1';
 -- ----------------------------------------------------------------------------
 -- Variables are grouped by purpose below; each group is labeled with a one-line
 -- header. Full descriptions follow the block under "Variable notes".
--- GCP project (auto-detected in [C])
-DECLARE bootstrap_default_project_id STRING;
+-- GCP project: auto-detected at runtime; its DECLARE lives in [B] (pin it there
+-- only to run against a different project).
 -- Datasets (repository / UDF)
 DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository';
 DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';
@@ -52,13 +52,6 @@ DECLARE bootstrap_udf_name_suffix STRING DEFAULT '';
 DECLARE bootstrap_project_token_pattern STRING DEFAULT r'^([^-]+)';
 --
 -- Variable notes (keyed by name):
---   bootstrap_default_project_id
---     Single source of truth for the GCP project. The repository, the UDFs, and
---     the smoke-test target all live in one project. It is auto-detected from
---     INFORMATION_SCHEMA.SCHEMATA (the project the job runs in) in [C] below; to
---     pin it instead, set a literal there. The role-specific
---     bootstrap_*_project_id variables live in [C] and take this unless
---     individually pinned.
 --   bootstrap_repository_dataset / bootstrap_udf_dataset
 --     Repository dataset (holds the lineage_* tables) and UDF dataset (holds the
 --     functions created here). Their *_project_id are in [C].
@@ -95,6 +88,13 @@ DECLARE bootstrap_project_token_pattern STRING DEFAULT r'^([^-]+)';
 -- ----------------------------------------------------------------------------
 -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
 -- ----------------------------------------------------------------------------
+-- Single source of truth for the GCP project. Declared here (not in [A]) because
+-- it is normally not set by hand: it is auto-detected in [C] from
+-- INFORMATION_SCHEMA.SCHEMATA (the project the job runs in). To pin it instead,
+-- set a literal in [C]. The repository, the UDFs, and the smoke-test target all
+-- live in this one project; the role-specific bootstrap_*_project_id variables
+-- live in [C] and take this unless individually pinned.
+DECLARE bootstrap_default_project_id STRING;
 -- UDF function names created in bootstrap_udf_dataset (assembled in [C] from the
 -- udf prefix/suffix above; keep them in step with 03). The main analysis UDF, the
 -- structural-fingerprint UDF (collapses rotating-destination JOBS; same GCS
