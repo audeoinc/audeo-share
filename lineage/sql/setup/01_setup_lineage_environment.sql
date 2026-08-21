@@ -878,6 +878,8 @@ AS 'Persistent fingerprint UDF smoke test did not behave as expected.';
 -- 7. Setup summary
 -- ============================================================================
 SELECT
+  bootstrap_default_project_id AS project_id,
+  bootstrap_project_token AS project_token,
   FORMAT(
     '%s.%s',
     bootstrap_repository_project_id,

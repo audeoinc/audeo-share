@@ -1,5 +1,13 @@
 # 1.5.0-032
 
+- 01 setup summary (step 7) now also reports `project_id` (the auto-detected
+  project) and `project_token` (the substring extracted by
+  `bootstrap_project_token_pattern`) as its first two columns, so a run can be
+  verified at a glance: the `{project_token}` placeholder in dataset / prefix /
+  suffix inputs is substituted at runtime (in [C], before names are assembled), so
+  the summary's `repository_dataset` etc. show the resolved names, and the new
+  columns show the token that produced them. Display-only.
+
 - Aligned the `[A]` group order across all scripts to match 03: project-token
   substitution first, then datasets, then table naming, then UDF naming, then the
   file-specific groups. For consistency with the "[A] = set per deployment"
