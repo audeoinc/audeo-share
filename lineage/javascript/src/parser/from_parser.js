@@ -355,9 +355,17 @@ class FromParser {
 
     const firstInnerToken = innerTokens.find((token) => token.token_type !== "COMMENT");
 
-    if (!firstInnerToken || firstInnerToken.normalized_token !== "SELECT") {
+    /*
+     * A parenthesized FROM source is any query, which QueryParser below handles:
+     * a plain SELECT, a WITH (CTE) query, or a set operation whose first branch is
+     * itself parenthesized ('('). Only these can start a query, so reject anything
+     * else (e.g. a bare table name belongs to the non-subquery source path).
+     */
+    const queryStarters = new Set(["SELECT", "WITH", "("]);
+
+    if (!firstInnerToken || !queryStarters.has(firstInnerToken.normalized_token)) {
       throw new SyntaxError(
-        "FromParser: parenthesized FROM source must begin with SELECT."
+        "FromParser: parenthesized FROM source must be a query (SELECT, WITH, or a parenthesized set operation)."
       );
     }
 

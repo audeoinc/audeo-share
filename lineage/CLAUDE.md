@@ -220,8 +220,8 @@ npm test                        # build + verify:bundle + test:release を一括
 
 ## 7. 現在地
 
-- バンドル: `sha256 = 37aec3cd5cb25d8bb4cf8a6975bc6e1c34ba67ee3f352527e05137b8781a2b7b`、`459728` bytes
-- `test:release` 47 本 PASS / ゴールデン 48 ケース PASS
+- バンドル: `sha256 = c4c58631277417d119a76c4bdf1e37fb08448f2cbf29d34f344f2928462ffbf3`、`460181` bytes
+- `test:release` 48 本 PASS / ゴールデン 48 ケース PASS
 - 直近の修正: 03 STEP 3 を**データセット単位のループ**へ変更し、UDF チャンク分割を撤去。
   リージョン全体を1パスで解析すると V8 ヒープ蓄積で "UDF out of memory" になり、行数チャンクでも
   大オブジェクトが偏ると OOM が続いた。実運用で「1データセットずつなら通る」ことを確認済みのため、

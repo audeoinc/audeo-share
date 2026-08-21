@@ -1,5 +1,16 @@
 # 1.5.0-032
 
+- Allowed a parenthesized FROM subquery to begin with `WITH` or a set operation,
+  not only `SELECT` (engine). `FromParser.#parseSubquerySource` required the first
+  inner token to be `SELECT` and threw "parenthesized FROM source must begin with
+  SELECT", even though it delegates parsing to `QueryParser`, which already handles
+  CTEs and UNION/INTERSECT/EXCEPT. DAG-generated SQL of the form
+  `FROM (WITH xxx AS (...) SELECT ... INTERSECT DISTINCT (WITH zzz AS (...) SELECT ...))`
+  failed to parse. Relaxed the guard to accept `SELECT`, `WITH`, or `(` (a
+  parenthesized set-operation branch) as the query start; both branches now resolve
+  to their physical columns with no diagnostics. Test: test_v1_5_0_070. Bundle
+  rebuilt (sha256 c4c5863..., 460181 bytes); test:release 48 / golden 48 PASS.
+
 - Fixed a UNION ALL column-count mismatch when building `current_target_columns` /
   `current_target_column_field_paths` in 03 STEP 3 ("Queries in UNION ALL have
   mismatched column count. Query 1 has 22 columns, Query 10 has 29 columns"). Each
