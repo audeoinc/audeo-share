@@ -15,13 +15,16 @@ SET @@location = 'asia-northeast1';
 -- ----------------------------------------------------------------------------
 -- [A] REQUIRED per deployment / region -- set these
 -- ----------------------------------------------------------------------------
--- DECLAREs are grouped below, each with a brief inline note; full descriptions
--- follow the block under "Variable notes".
-DECLARE bootstrap_default_project_id STRING;                              -- GCP project; auto-detected in [C]
-DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository'; -- lnge_ tables dataset
-DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';                   -- UDF dataset
+-- Variables are grouped by purpose below; each group is labeled with a one-line
+-- header. Full descriptions follow the block under "Variable notes".
+-- GCP project (auto-detected in [C])
+DECLARE bootstrap_default_project_id STRING;
+-- Datasets (repository / UDF)
+DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository';
+DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';
+-- UDF JS bundle location (GCS)
 DECLARE bootstrap_udf_library_uri STRING DEFAULT
-  'gs://YOUR_BUCKET/YOUR_PATH/lineage_udf_bundle.js';                     -- GCS URI of the JS bundle
+  'gs://YOUR_BUCKET/YOUR_PATH/lineage_udf_bundle.js';
 --
 -- Variable notes (keyed by name):
 --   bootstrap_default_project_id

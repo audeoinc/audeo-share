@@ -48,12 +48,15 @@ BEGIN
 -- ----------------------------------------------------------------------------
 -- [A] REQUIRED per deployment / region -- set these
 -- ----------------------------------------------------------------------------
--- DECLAREs are grouped below, each with a brief inline note; full descriptions
--- follow the block under "Variable notes".
-DECLARE default_project_id STRING;                              -- GCP project; auto-detected in [C]
-DECLARE repository_dataset STRING DEFAULT 'lineage_repository'; -- lnge_ tables dataset
-DECLARE udf_dataset STRING DEFAULT 'dataset';                   -- UDF dataset
-DECLARE source_project_filters                                  -- physical-source projects + dataset filters
+-- Variables are grouped by purpose below; each group is labeled with a one-line
+-- header. Full descriptions follow the block under "Variable notes".
+-- GCP project (auto-detected in [C])
+DECLARE default_project_id STRING;
+-- Datasets (repository / UDF)
+DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
+DECLARE udf_dataset STRING DEFAULT 'dataset';
+-- Physical source projects & dataset filters
+DECLARE source_project_filters
   ARRAY<STRUCT<
     project_id STRING,
     dataset_include_patterns ARRAY<STRING>,
@@ -66,23 +69,29 @@ DECLARE source_project_filters                                  -- physical-sour
       CAST([] AS ARRAY<STRING>) AS dataset_exclude_patterns
     )
   ];
-DECLARE target_dataset_include_patterns ARRAY<STRING> DEFAULT [];  -- target dataset include regexes
-DECLARE target_dataset_exclude_patterns ARRAY<STRING> DEFAULT [];  -- target dataset exclude regexes
-DECLARE scheduled_query_service_accounts ARRAY<STRING> DEFAULT [   -- Scheduled Query SAs (STEP 2)
+-- Target dataset scope (Views to analyze)
+DECLARE target_dataset_include_patterns ARRAY<STRING> DEFAULT [];
+DECLARE target_dataset_exclude_patterns ARRAY<STRING> DEFAULT [];
+-- STEP 2 service accounts (generated tables)
+DECLARE scheduled_query_service_accounts ARRAY<STRING> DEFAULT [
   'project_id@appspot.gserviceaccount.com'
 ];
-DECLARE dag_service_accounts ARRAY<STRING> DEFAULT [              -- DAG / Airflow SAs (STEP 2)
+DECLARE dag_service_accounts ARRAY<STRING> DEFAULT [
   'project_id@appspot.gserviceaccount.com'
 ];
-DECLARE table_name_prefix STRING DEFAULT '';                     -- table name prefix
-DECLARE table_name_suffix STRING DEFAULT '';                     -- table name suffix
-DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';        -- {project_token} regex
-DECLARE registry_exclude_object_patterns ARRAY<STRING> DEFAULT [];  -- registry-stage name excludes
-DECLARE registry_exclude_dataset_patterns ARRAY<STRING> DEFAULT []; -- registry-stage dataset excludes
-DECLARE analysis_include_object_patterns ARRAY<STRING> DEFAULT [];  -- analysis-stage name includes
-DECLARE analysis_exclude_object_patterns ARRAY<STRING> DEFAULT [];  -- analysis-stage name excludes
-DECLARE analysis_include_dataset_patterns ARRAY<STRING> DEFAULT []; -- analysis-stage dataset includes
-DECLARE analysis_exclude_dataset_patterns ARRAY<STRING> DEFAULT []; -- analysis-stage dataset excludes
+-- Table naming (prefix / suffix)
+DECLARE table_name_prefix STRING DEFAULT '';
+DECLARE table_name_suffix STRING DEFAULT '';
+-- Project-token substitution
+DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
+-- Registry-stage exclusion (drop from collection)
+DECLARE registry_exclude_object_patterns ARRAY<STRING> DEFAULT [];
+DECLARE registry_exclude_dataset_patterns ARRAY<STRING> DEFAULT [];
+-- Analysis-stage filters (gate analysis only)
+DECLARE analysis_include_object_patterns ARRAY<STRING> DEFAULT [];
+DECLARE analysis_exclude_object_patterns ARRAY<STRING> DEFAULT [];
+DECLARE analysis_include_dataset_patterns ARRAY<STRING> DEFAULT [];
+DECLARE analysis_exclude_dataset_patterns ARRAY<STRING> DEFAULT [];
 --
 -- Variable notes (keyed by name):
 --   default_project_id

@@ -32,18 +32,24 @@ SET @@location = 'asia-northeast1';
 -- ----------------------------------------------------------------------------
 -- [A] REQUIRED per deployment / region -- set these
 -- ----------------------------------------------------------------------------
--- DECLAREs are grouped below, each with a brief inline note; full descriptions
--- follow the block under "Variable notes".
-DECLARE bootstrap_default_project_id STRING;                              -- GCP project; auto-detected in [C]
-DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository'; -- lnge_ tables dataset
-DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';                   -- UDF dataset
+-- Variables are grouped by purpose below; each group is labeled with a one-line
+-- header. Full descriptions follow the block under "Variable notes".
+-- GCP project (auto-detected in [C])
+DECLARE bootstrap_default_project_id STRING;
+-- Datasets (repository / UDF)
+DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository';
+DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';
+-- UDF JS bundle location (GCS)
 DECLARE bootstrap_udf_library_uri STRING DEFAULT
-  'gs://YOUR_BUCKET/YOUR_PATH/lineage_udf_bundle.js';                     -- GCS URI of the JS bundle
-DECLARE bootstrap_table_name_prefix STRING DEFAULT '';                    -- table name prefix
-DECLARE bootstrap_table_name_suffix STRING DEFAULT '';                    -- table name suffix
-DECLARE bootstrap_udf_name_prefix STRING DEFAULT '';                      -- UDF name prefix
-DECLARE bootstrap_udf_name_suffix STRING DEFAULT '';                      -- UDF name suffix
-DECLARE bootstrap_project_token_pattern STRING DEFAULT r'^([^-]+)';       -- {project_token} regex
+  'gs://YOUR_BUCKET/YOUR_PATH/lineage_udf_bundle.js';
+-- Table naming (prefix / suffix)
+DECLARE bootstrap_table_name_prefix STRING DEFAULT '';
+DECLARE bootstrap_table_name_suffix STRING DEFAULT '';
+-- UDF naming (prefix / suffix)
+DECLARE bootstrap_udf_name_prefix STRING DEFAULT '';
+DECLARE bootstrap_udf_name_suffix STRING DEFAULT '';
+-- Project-token substitution
+DECLARE bootstrap_project_token_pattern STRING DEFAULT r'^([^-]+)';
 --
 -- Variable notes (keyed by name):
 --   bootstrap_default_project_id

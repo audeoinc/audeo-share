@@ -56,13 +56,15 @@ BEGIN
   -- --------------------------------------------------------------------------
   -- [A] REQUIRED per deployment / region -- set these
   -- --------------------------------------------------------------------------
-  -- DECLAREs are grouped below, each with a brief inline note; full descriptions
-  -- follow the block under "Variable notes".
-  DECLARE default_project_id STRING;                              -- GCP project; auto-detected in [C]
-  DECLARE job_region STRING DEFAULT 'asia-northeast1';            -- must equal @@location
-  DECLARE repository_dataset STRING DEFAULT 'lineage_repository'; -- lnge_ tables dataset
-  DECLARE target_dataset STRING DEFAULT 'dataset';               -- dataset holding the analyzed objects
-  DECLARE udf_dataset STRING DEFAULT 'dataset';                  -- UDF dataset
+  -- Variables are grouped by purpose below; each group is labeled with a one-line
+  -- header. Full descriptions follow the block under "Variable notes".
+  -- GCP project (auto-detected in [C])
+  DECLARE default_project_id STRING;
+  -- Region & datasets (repository / target / UDF)
+  DECLARE job_region STRING DEFAULT 'asia-northeast1';
+  DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
+  DECLARE target_dataset STRING DEFAULT 'dataset';
+  DECLARE udf_dataset STRING DEFAULT 'dataset';
   --
   -- Variable notes (keyed by name):
   --   default_project_id

@@ -3,10 +3,12 @@
 - Reorganized each script's `[A]` (required per-deployment) config section into a
   consistent "grouped DECLAREs + variable notes" layout (01/03/04/06/07/08/09).
   Previously `[A]` interleaved a multi-line description comment before each DECLARE;
-  now all the DECLAREs sit in one contiguous block (each with a short trailing
-  inline note) so the settable variables are visible at a glance, and the full
-  descriptions follow the block under a `Variable notes:` header keyed by variable
-  name. Comment/whitespace reorganization only -- every variable is still declared
+  now the DECLAREs sit in one contiguous block, split into purpose groups each
+  introduced by a single one-line header comment (e.g. `-- Datasets (repository /
+  UDF)`, `-- Table naming (prefix / suffix)`), so the settable variables are
+  visible at a glance. There are no per-line inline comments; the full descriptions
+  follow the block under a `Variable notes:` header keyed by variable name.
+  Comment/whitespace reorganization only -- every variable is still declared
   exactly once, all DECLAREs still precede the first statement, and no defaults
   changed, so behavior is unchanged. `[B]`/`[C]` are untouched. SQL-only; the
   engine bundle is unchanged.

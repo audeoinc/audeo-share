@@ -46,13 +46,15 @@ BEGIN
   -- --------------------------------------------------------------------------
   -- [A] REQUIRED per deployment / region -- set these
   -- --------------------------------------------------------------------------
-  -- DECLAREs are grouped below, each with a brief inline note; full descriptions
-  -- follow the block under "Variable notes".
-  DECLARE default_project_id STRING;                                       -- GCP project; auto-detected in [C]
-  DECLARE job_region STRING DEFAULT 'asia-northeast1';                     -- must equal @@location
-  DECLARE target_dataset STRING DEFAULT 'dataset';                        -- dataset holding the VIEW
-  DECLARE target_view_name STRING DEFAULT 'v_customer_sales_cost_sample';  -- VIEW to analyze
-  DECLARE udf_dataset STRING DEFAULT 'dataset';                           -- UDF dataset
+  -- Variables are grouped by purpose below; each group is labeled with a one-line
+  -- header. Full descriptions follow the block under "Variable notes".
+  -- GCP project (auto-detected in [C])
+  DECLARE default_project_id STRING;
+  -- Region, target VIEW & datasets
+  DECLARE job_region STRING DEFAULT 'asia-northeast1';
+  DECLARE target_dataset STRING DEFAULT 'dataset';
+  DECLARE target_view_name STRING DEFAULT 'v_customer_sales_cost_sample';
+  DECLARE udf_dataset STRING DEFAULT 'dataset';
   --
   -- Variable notes (keyed by name):
   --   default_project_id

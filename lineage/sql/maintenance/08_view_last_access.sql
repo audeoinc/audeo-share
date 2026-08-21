@@ -49,16 +49,20 @@ BEGIN
   -- --------------------------------------------------------------------------
   -- [A] REQUIRED per deployment / region -- set these
   -- --------------------------------------------------------------------------
-  -- DECLAREs are grouped below, each with a brief inline note; full descriptions
-  -- follow the block under "Variable notes".
-  DECLARE default_project_id STRING;                              -- GCP project; auto-detected in [C]
-  DECLARE audit_project_id STRING DEFAULT NULL;                   -- audit sink project (NULL = default)
-  DECLARE audit_dataset STRING DEFAULT 'audit_logs';             -- audit sink dataset
-  DECLARE audit_table STRING DEFAULT 'cloudaudit_googleapis_com_data_access';  -- audit sink table
-  DECLARE repository_dataset STRING DEFAULT 'lineage_repository'; -- lnge_ registry dataset
-  DECLARE table_name_prefix STRING DEFAULT '';                    -- table name prefix
-  DECLARE table_name_suffix STRING DEFAULT '';                    -- table name suffix
-  DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';       -- {project_token} regex
+  -- Variables are grouped by purpose below; each group is labeled with a one-line
+  -- header. Full descriptions follow the block under "Variable notes".
+  -- GCP project (auto-detected in [C])
+  DECLARE default_project_id STRING;
+  -- Audit log sink (project / dataset / table)
+  DECLARE audit_project_id STRING DEFAULT NULL;
+  DECLARE audit_dataset STRING DEFAULT 'audit_logs';
+  DECLARE audit_table STRING DEFAULT 'cloudaudit_googleapis_com_data_access';
+  -- Repository dataset & table naming
+  DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
+  DECLARE table_name_prefix STRING DEFAULT '';
+  DECLARE table_name_suffix STRING DEFAULT '';
+  -- Project-token substitution
+  DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
   --
   -- Variable notes (keyed by name):
   --   default_project_id

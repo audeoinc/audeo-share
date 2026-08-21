@@ -68,15 +68,19 @@ BEGIN
   -- --------------------------------------------------------------------------
   -- [A] REQUIRED per deployment / region -- set these
   -- --------------------------------------------------------------------------
-  -- DECLAREs are grouped below, each with a brief inline note; full descriptions
-  -- follow the block under "Variable notes".
-  DECLARE default_project_id STRING;                              -- GCP project; auto-detected in [C]
-  DECLARE repository_dataset STRING DEFAULT 'lineage_repository'; -- lnge_ registry dataset
-  DECLARE table_name_prefix STRING DEFAULT '';                    -- table name prefix
-  DECLARE table_name_suffix STRING DEFAULT '';                    -- table name suffix
-  DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';       -- {project_token} regex
-  DECLARE target_dataset_include_patterns ARRAY<STRING> DEFAULT []; -- dataset include regexes
-  DECLARE target_dataset_exclude_patterns ARRAY<STRING> DEFAULT []; -- dataset exclude regexes
+  -- Variables are grouped by purpose below; each group is labeled with a one-line
+  -- header. Full descriptions follow the block under "Variable notes".
+  -- GCP project (auto-detected in [C])
+  DECLARE default_project_id STRING;
+  -- Repository dataset & table naming
+  DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
+  DECLARE table_name_prefix STRING DEFAULT '';
+  DECLARE table_name_suffix STRING DEFAULT '';
+  -- Project-token substitution
+  DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
+  -- Target dataset scope
+  DECLARE target_dataset_include_patterns ARRAY<STRING> DEFAULT [];
+  DECLARE target_dataset_exclude_patterns ARRAY<STRING> DEFAULT [];
   --
   -- Variable notes (keyed by name):
   --   default_project_id
