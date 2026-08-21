@@ -132,6 +132,13 @@ BEGIN
   SET table_name_suffix =
     REPLACE(table_name_suffix, '{project_token}', project_token);
 
+  -- Guard: an unsubstituted '{project_token}' (or any invalid character) in a dataset
+  -- name is surfaced here instead of failing later at query time.
+  ASSERT REGEXP_CONTAINS(repository_dataset, r'^[A-Za-z0-9_]+$')
+    AS 'repository_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+  ASSERT REGEXP_CONTAINS(audit_dataset, r'^[A-Za-z0-9_]+$')
+    AS 'audit_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+
   ASSERT lookback_days >= 1 AS 'lookback_days must be >= 1.';
 
   SET audit_fqn = FORMAT('%s.%s.%s', audit_project_id, audit_dataset, audit_table);

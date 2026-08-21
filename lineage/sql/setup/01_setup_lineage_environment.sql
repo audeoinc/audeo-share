@@ -174,10 +174,27 @@ SET bootstrap_udf_name_prefix =
   REPLACE(bootstrap_udf_name_prefix, '{project_token}', bootstrap_project_token);
 SET bootstrap_udf_name_suffix =
   REPLACE(bootstrap_udf_name_suffix, '{project_token}', bootstrap_project_token);
+SET bootstrap_udf_library_uri =
+  REPLACE(bootstrap_udf_library_uri, '{project_token}', bootstrap_project_token);
 SET bootstrap_target_datasets = ARRAY(
   SELECT REPLACE(d, '{project_token}', bootstrap_project_token)
   FROM UNNEST(bootstrap_target_datasets) AS d
 );
+
+-- Guard: surface an unsubstituted '{project_token}' (or any invalid character) in a
+-- name input here, rather than as a confusing failure at DDL time. Dataset names
+-- must be valid identifiers (letters/digits/underscore); the GCS library URI is not
+-- an identifier, so it is only checked for a leftover placeholder.
+ASSERT REGEXP_CONTAINS(bootstrap_repository_dataset, r'^[A-Za-z0-9_]+$')
+  AS 'bootstrap_repository_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+ASSERT REGEXP_CONTAINS(bootstrap_udf_dataset, r'^[A-Za-z0-9_]+$')
+  AS 'bootstrap_udf_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+ASSERT NOT EXISTS (
+  SELECT 1 FROM UNNEST(bootstrap_target_datasets) AS d
+  WHERE NOT REGEXP_CONTAINS(d, r'^[A-Za-z0-9_]+$')
+) AS 'Each bootstrap_target_datasets entry must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+ASSERT STRPOS(bootstrap_udf_library_uri, '{project_token}') = 0
+  AS 'bootstrap_udf_library_uri still contains {project_token}; check bootstrap_project_token_pattern.';
 
 -- UDF names: udf_prefix + 'lnge_' + canonical base + udf_suffix (no marker).
 SET bootstrap_udf_function_name =

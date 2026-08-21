@@ -131,6 +131,16 @@ BEGIN
   SET target_dataset = REPLACE(target_dataset, '{project_token}', project_token);
   SET udf_name_prefix = REPLACE(udf_name_prefix, '{project_token}', project_token);
   SET udf_name_suffix = REPLACE(udf_name_suffix, '{project_token}', project_token);
+
+  -- Guard: an unsubstituted '{project_token}' (or any invalid character) in a dataset
+  -- name is surfaced here instead of failing later at DDL time.
+  ASSERT REGEXP_CONTAINS(repository_dataset, r'^[A-Za-z0-9_]+$')
+    AS 'repository_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+  ASSERT REGEXP_CONTAINS(udf_dataset, r'^[A-Za-z0-9_]+$')
+    AS 'udf_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+  ASSERT REGEXP_CONTAINS(target_dataset, r'^[A-Za-z0-9_]+$')
+    AS 'target_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+
   SET udf_function_name =
     udf_name_prefix || 'lnge_' || 'analyze_json' || udf_name_suffix;
 

@@ -168,6 +168,11 @@ BEGIN
   SET table_name_suffix =
     REPLACE(table_name_suffix, '{project_token}', project_token);
 
+  -- Guard: an unsubstituted '{project_token}' (or any invalid character) in the
+  -- dataset name is surfaced here instead of failing later at query time.
+  ASSERT REGEXP_CONTAINS(repository_dataset, r'^[A-Za-z0-9_]+$')
+    AS 'repository_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+
   ASSERT lookback_days >= 1 AS 'lookback_days must be >= 1.';
   ASSERT REGEXP_CONTAINS(target_project_id, r'^[A-Za-z0-9._:-]+$')
   AS 'Invalid target_project_id.';

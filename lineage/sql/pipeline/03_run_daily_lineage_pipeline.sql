@@ -341,6 +341,14 @@ SET table_name_suffix =
 SET udf_name_prefix = REPLACE(udf_name_prefix, '{project_token}', project_token);
 SET udf_name_suffix = REPLACE(udf_name_suffix, '{project_token}', project_token);
 
+-- Guard: an unsubstituted '{project_token}' (or any invalid character) in a dataset
+-- name is surfaced here instead of failing later at DDL time. (Prefix/suffix feed
+-- the assembled table/UDF names, which are validated with their own ASSERTs.)
+ASSERT REGEXP_CONTAINS(repository_dataset, r'^[A-Za-z0-9_]+$')
+  AS 'repository_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+ASSERT REGEXP_CONTAINS(udf_dataset, r'^[A-Za-z0-9_]+$')
+  AS 'udf_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+
 -- UDF names: udf_prefix + 'lnge_' + canonical base + udf_suffix (no marker). Must
 -- match 01. Validity (letters/digits/'_' only) is asserted with the other udf
 -- checks below.

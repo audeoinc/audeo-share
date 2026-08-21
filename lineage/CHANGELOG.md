@@ -1,5 +1,21 @@
 # 1.5.0-032
 
+- Fixed `{project_token}` not being substituted in the UDF library URI
+  (`bootstrap_udf_library_uri` in 01 and 04): the URI was missing from the runtime
+  REPLACE list, so a `{project_token}` placeholder in it reached the CREATE FUNCTION
+  / validation as a literal and failed. Added the URI to the REPLACE block in both
+  scripts.
+
+- Added early guards (task A) so an unsubstituted `{project_token}` (or any invalid
+  character) surfaces at setup time instead of as a confusing failure at DDL/query
+  time. After the REPLACE block, each script now ASSERTs that its dataset-name
+  inputs (repository / udf / target / audit, as applicable, plus each
+  bootstrap_target_datasets entry) match `^[A-Za-z0-9_]+$` -- which also catches a
+  leftover `{project_token}` since braces are invalid -- and 01/04 additionally
+  ASSERT the GCS library URI no longer contains `{project_token}` (a URI is not an
+  identifier, so it is checked for the placeholder only). Prefix/suffix inputs were
+  already covered by the assembled table/UDF-name ASSERTs. SQL-only.
+
 - 01 setup summary (step 7) now also reports `project_id` (the auto-detected
   project) and `project_token` (the substring extracted by
   `bootstrap_project_token_pattern`) as its first two columns, so a run can be
