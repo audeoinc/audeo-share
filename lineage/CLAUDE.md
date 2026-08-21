@@ -90,6 +90,19 @@ npm test                        # build + verify:bundle + test:release を一括
     UDF は `lnge_analyze_json` / `lnge_fingerprint_sql` / `lnge_render_dynamic_sql`。
     データセット名（`lineage_repository` 等）・GCS バンドル・ファイル名・JS API 名は
     対象外。新規オブジェクトも同規則に従う。
+    **prefix/suffix**：テーブル/ビューは `*_table_name_prefix`/`_suffix`、UDF は
+    **専用の** `*_udf_name_prefix`/`_suffix`（01/03/04/06/07）で組み立て
+    （`prefix + 'lnge_' + base + suffix`）。UDF/ルーチン名はハイフン不可なので専用に
+    分離（ハイフン混入は `^[A-Za-z0-9_]+$` ASSERT で検出）。01 が作る UDF 名と
+    03/04/06/07 が呼ぶ UDF 名は同じ prefix/suffix で揃えること。
+  - **project_id の自動取得**：各スクリプト（01/03/04/06/07/08/09）は
+    `default_project_id`（01/04 は `bootstrap_default_project_id`）を
+    `EXECUTE IMMEDIATE FORMAT("... \`region-%s\`.INFORMATION_SCHEMA.SCHEMATA ...", @@location) INTO`
+    で自動取得（catalog_name＝ジョブ実行プロジェクト）。role 別 `*_project_id` は
+    `DEFAULT NULL` 宣言＋実行時 `COALESCE(role, default)`（リテラルを入れれば pin）。
+    別プロジェクト運用時は該当 SET をリテラルに置換。DECLARE-DEFAULT の評価順の都合で
+    自動取得は「全 DECLARE の後の最初の実行文」に置く（04 は
+    `repository_dataset_full_name` も同ブロックで SET）。debug スクリプトは対象外。
 - **03 パイプラインの構造**：`lnge_render_dynamic_sql`（8 プレースホルダ / 9 パラメータ）で
   テンプレート置換 → `EXECUTE IMMEDIATE`。この関数は **01 setup が UDF Dataset（`lnge_analyze_json`
   と同じ場所 = `udf_project_id.udf_dataset`）に作る永続関数**（旧: スクリプト内 TEMP FUNCTION。

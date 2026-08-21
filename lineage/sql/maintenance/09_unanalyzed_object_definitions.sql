@@ -69,9 +69,10 @@ BEGIN
   -- [A] REQUIRED per deployment / region -- set these
   -- --------------------------------------------------------------------------
   -- GCP project. The target objects (views / generated tables) and the lineage
-  -- repository share one project; set it once. Their *_project_id variables live
-  -- in [C] and default to this.
-  DECLARE default_project_id STRING DEFAULT 'project_id';
+  -- repository share one project. Their *_project_id variables live in [C] and
+  -- take this. Auto-detected from INFORMATION_SCHEMA.SCHEMATA in [C] (the project
+  -- the job runs in); to pin it, set a literal there.
+  DECLARE default_project_id STRING;
 
   -- Lineage repository dataset (holds the definition registry). Its physical
   -- registry table name is assembled from the prefix/suffix below -- keep them in
@@ -111,10 +112,10 @@ BEGIN
   -- (the single source of truth set at the top of this file); never set it here.
   DECLARE job_region STRING DEFAULT @@location;
 
-  -- Role-specific projects default to default_project_id ([A]); override a single
-  -- line only if that role's objects live in a separate project.
-  DECLARE target_project_id STRING DEFAULT default_project_id;
-  DECLARE repository_project_id STRING DEFAULT default_project_id;
+  -- Role-specific projects take default_project_id (auto-detected below); pin a
+  -- line to a literal only if that role's objects live in a separate project.
+  DECLARE target_project_id STRING DEFAULT NULL;
+  DECLARE repository_project_id STRING DEFAULT NULL;
 
   -- Target datasets resolved at runtime from target_dataset_*_patterns ([A]).
   DECLARE target_datasets ARRAY<STRING>;
@@ -127,6 +128,18 @@ BEGIN
   -- Dynamic SQL work variables.
   DECLARE view_defs_union_sql STRING;
   DECLARE rendered_sql STRING;
+
+  -- Auto-detect the running GCP project from INFORMATION_SCHEMA.SCHEMATA
+  -- (catalog_name). The region-qualified identifier is built from @@location; to
+  -- pin the project, replace this SET with a literal. Roles take it unless pinned.
+  EXECUTE IMMEDIATE FORMAT(
+    "SELECT DISTINCT catalog_name FROM `region-%s`.INFORMATION_SCHEMA.SCHEMATA LIMIT 1",
+    @@location
+  ) INTO default_project_id;
+  ASSERT default_project_id IS NOT NULL AS
+    'Could not auto-detect the project id from INFORMATION_SCHEMA.SCHEMATA; set default_project_id to a literal.';
+  SET target_project_id = COALESCE(target_project_id, default_project_id);
+  SET repository_project_id = COALESCE(repository_project_id, default_project_id);
 
   ASSERT lookback_days >= 1 AS 'lookback_days must be >= 1.';
   ASSERT REGEXP_CONTAINS(target_project_id, r'^[A-Za-z0-9._:-]+$')

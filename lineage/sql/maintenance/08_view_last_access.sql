@@ -50,14 +50,15 @@ BEGIN
   -- [A] REQUIRED per deployment / region -- set these
   -- --------------------------------------------------------------------------
   -- GCP project. The views (target) and the lineage repository share one
-  -- project; set it once. Their *_project_id variables live in [C] and default
-  -- to this.
-  DECLARE default_project_id STRING DEFAULT 'project_id';
+  -- project; set it once. Their *_project_id variables live in [C] and take this.
+  -- Auto-detected from INFORMATION_SCHEMA.SCHEMATA in [C] (the project the job
+  -- runs in); to pin it, set a literal there.
+  DECLARE default_project_id STRING;
 
   -- Audit log sink location (the *_data_access table). The sink can legitimately
-  -- live in a separate project, so audit_project_id defaults to the project above
-  -- but is meant to be overridden when the sink is elsewhere.
-  DECLARE audit_project_id STRING DEFAULT default_project_id;
+  -- live in a separate project, so pin audit_project_id to a literal when the sink
+  -- is elsewhere; otherwise it takes the auto-detected default.
+  DECLARE audit_project_id STRING DEFAULT NULL;
   DECLARE audit_dataset STRING DEFAULT 'audit_logs';
   DECLARE audit_table STRING DEFAULT 'cloudaudit_googleapis_com_data_access';
 
@@ -80,13 +81,27 @@ BEGIN
   -- --------------------------------------------------------------------------
   -- [C] DERIVED / INTERNAL -- from [A]; DO NOT edit
   -- --------------------------------------------------------------------------
-  -- Views' project and the repository project default to default_project_id
-  -- ([A]); override a line only if that role's objects live in a separate project.
-  DECLARE target_project_id STRING DEFAULT default_project_id;
-  DECLARE repository_project_id STRING DEFAULT default_project_id;
+  -- Views' project and the repository project take default_project_id (auto-
+  -- detected below); pin a line to a literal only if that role's objects live in a
+  -- separate project.
+  DECLARE target_project_id STRING DEFAULT NULL;
+  DECLARE repository_project_id STRING DEFAULT NULL;
   DECLARE audit_fqn STRING;
   DECLARE registry_fqn STRING;
   DECLARE rendered_sql STRING;
+
+  -- Auto-detect the running GCP project from INFORMATION_SCHEMA.SCHEMATA
+  -- (catalog_name). The region-qualified identifier is built from @@location; to
+  -- pin the project, replace this SET with a literal. Roles take it unless pinned.
+  EXECUTE IMMEDIATE FORMAT(
+    "SELECT DISTINCT catalog_name FROM `region-%s`.INFORMATION_SCHEMA.SCHEMATA LIMIT 1",
+    @@location
+  ) INTO default_project_id;
+  ASSERT default_project_id IS NOT NULL AS
+    'Could not auto-detect the project id from INFORMATION_SCHEMA.SCHEMATA; set default_project_id to a literal.';
+  SET target_project_id = COALESCE(target_project_id, default_project_id);
+  SET repository_project_id = COALESCE(repository_project_id, default_project_id);
+  SET audit_project_id = COALESCE(audit_project_id, default_project_id);
 
   ASSERT lookback_days >= 1 AS 'lookback_days must be >= 1.';
 

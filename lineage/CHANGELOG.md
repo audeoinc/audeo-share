@@ -1,5 +1,30 @@
 # 1.5.0-032
 
+- Made UDF (routine) names prefix/suffix-configurable, mirroring the tables. New
+  dedicated `*_udf_name_prefix` / `*_udf_name_suffix` variables (default '') in 01
+  (creates), 03 (daily), and 04/06/07 (which call the analysis UDF) assemble the
+  UDF names as `udf_prefix + 'lnge_' + base + udf_suffix`
+  (`analyze_json` / `fingerprint_sql` / `render_dynamic_sql`). Kept separate from
+  the table prefix/suffix because routine names allow only letters/digits/'_' (no
+  '-', unlike backtick-quoted tables); a hyphen is caught by the existing
+  `^[A-Za-z0-9_]+$` name ASSERT. The prefix/suffix must be kept in step between 01
+  and the callers so the pipeline finds the functions.
+
+- Auto-detect the GCP project instead of hardcoding the `project_id` placeholder.
+  In every script (01/03/04/06/07/08/09) `default_project_id` (01/04:
+  `bootstrap_default_project_id`) is now resolved at runtime from
+  ``EXECUTE IMMEDIATE FORMAT("SELECT DISTINCT catalog_name FROM `region-%s`.INFORMATION_SCHEMA.SCHEMATA LIMIT 1", @@location) INTO ...`` (catalog_name = the
+  project the job runs in), with an ASSERT that it resolved. The role-specific
+  `*_project_id` variables changed from `DEFAULT default_project_id` to
+  `DEFAULT NULL` and are set via `COALESCE(role, default_project_id)` in a SET
+  block right after the DECLAREs, preserving the "pin one role by setting a
+  literal" behavior (a literal wins over the auto-detected default). To pin the
+  whole project, replace the auto-detect SET with a literal. 04 also moved its
+  `repository_dataset_full_name` assembly into that SET block (it previously
+  DECLARE-DEFAULTed from the project, which is NULL until auto-detect runs). The
+  debug script is intentionally left with the manual placeholder. SQL-only; the
+  engine bundle is unchanged. Not yet validated against BigQuery.
+
 - Applied a system-identity `lnge_` prefix to every table, view, and UDF this
   system creates/uses, and removed the now-redundant inline "lineage" from the
   canonical base names. Names assemble as `<prefix> + 'lnge_' + marker + base +

@@ -16,9 +16,11 @@ SET @@location = 'asia-northeast1';
 -- [A] REQUIRED per deployment / region -- set these
 -- ----------------------------------------------------------------------------
 -- Single source of truth for the GCP project. The repository, the UDFs, and the
--- target all live in one project, so set it here once; the role-specific
--- bootstrap_*_project_id variables live in [C] and default to it.
-DECLARE bootstrap_default_project_id STRING DEFAULT 'project_id';
+-- target all live in one project. The role-specific bootstrap_*_project_id
+-- variables live in [C] and take this. Auto-detected from
+-- INFORMATION_SCHEMA.SCHEMATA in [C] (the project the job runs in); to pin it, set
+-- a literal there.
+DECLARE bootstrap_default_project_id STRING;
 -- Repository dataset and UDF dataset (their *_project_id are in [C]).
 DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository';
 DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';
@@ -29,7 +31,11 @@ DECLARE bootstrap_udf_library_uri STRING DEFAULT
 -- ----------------------------------------------------------------------------
 -- [B] BEHAVIOR OPTIONS -- keep aligned with 01 / 03; defaults are safe
 -- ----------------------------------------------------------------------------
-DECLARE bootstrap_udf_function_name STRING DEFAULT 'lnge_analyze_json';
+-- Analysis UDF name: assembled in [C] as udf_prefix + 'lnge_' + base + udf_suffix
+-- (keep in step with 01). Routine names allow only letters/digits/'_' (no '-').
+DECLARE bootstrap_udf_name_prefix STRING DEFAULT '';
+DECLARE bootstrap_udf_name_suffix STRING DEFAULT '';
+DECLARE bootstrap_udf_function_name STRING;
 DECLARE bootstrap_target_datasets ARRAY<STRING> DEFAULT ['dataset'];
 DECLARE bootstrap_parser_strict_mode BOOL DEFAULT FALSE;
 DECLARE bootstrap_compact_export BOOL DEFAULT TRUE;
@@ -38,19 +44,17 @@ DECLARE bootstrap_max_impact_rank INT64 DEFAULT 100;
 -- ----------------------------------------------------------------------------
 -- [C] DERIVED / INTERNAL -- computed from [A] or @@location; DO NOT edit
 -- ----------------------------------------------------------------------------
--- Role-specific projects default to bootstrap_default_project_id ([A]); the
--- repository / target regions mirror @@location (single source of truth at top).
-DECLARE bootstrap_repository_project_id STRING DEFAULT bootstrap_default_project_id;
+-- Role-specific projects take bootstrap_default_project_id (auto-detected below);
+-- pin a line to a literal only if that role's objects live in a separate project.
+-- The repository / target regions mirror @@location (single source of truth).
+DECLARE bootstrap_repository_project_id STRING DEFAULT NULL;
 DECLARE bootstrap_repository_location STRING DEFAULT @@location;
-DECLARE bootstrap_udf_project_id STRING DEFAULT bootstrap_default_project_id;
-DECLARE bootstrap_target_project_id STRING DEFAULT bootstrap_default_project_id;
+DECLARE bootstrap_udf_project_id STRING DEFAULT NULL;
+DECLARE bootstrap_target_project_id STRING DEFAULT NULL;
 DECLARE bootstrap_target_region STRING DEFAULT @@location;
 
-DECLARE repository_dataset_full_name STRING DEFAULT FORMAT(
-  '%s.%s',
-  bootstrap_repository_project_id,
-  bootstrap_repository_dataset
-);
+-- Assembled after the project is auto-detected (see the SET block below).
+DECLARE repository_dataset_full_name STRING;
 
 DECLARE validation_started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
 DECLARE sample_dataset STRING;
@@ -58,6 +62,27 @@ DECLARE sample_dataset_full_name STRING;
 DECLARE udf_full_name STRING;
 DECLARE smoke_test_result STRING;
 DECLARE smoke_test_status STRING;
+
+-- Auto-detect the running GCP project from INFORMATION_SCHEMA.SCHEMATA
+-- (catalog_name). Region-qualified identifier built from @@location; to pin the
+-- project, replace this SET with a literal. Roles take it unless pinned.
+EXECUTE IMMEDIATE FORMAT(
+  "SELECT DISTINCT catalog_name FROM `region-%s`.INFORMATION_SCHEMA.SCHEMATA LIMIT 1",
+  @@location
+) INTO bootstrap_default_project_id;
+ASSERT bootstrap_default_project_id IS NOT NULL AS
+  'Could not auto-detect the project id from INFORMATION_SCHEMA.SCHEMATA; set bootstrap_default_project_id to a literal.';
+SET bootstrap_repository_project_id =
+  COALESCE(bootstrap_repository_project_id, bootstrap_default_project_id);
+SET bootstrap_udf_project_id =
+  COALESCE(bootstrap_udf_project_id, bootstrap_default_project_id);
+SET bootstrap_target_project_id =
+  COALESCE(bootstrap_target_project_id, bootstrap_default_project_id);
+SET repository_dataset_full_name = FORMAT(
+  '%s.%s', bootstrap_repository_project_id, bootstrap_repository_dataset
+);
+SET bootstrap_udf_function_name =
+  bootstrap_udf_name_prefix || 'lnge_' || 'analyze_json' || bootstrap_udf_name_suffix;
 
 CREATE TEMP TABLE validation_result
 (

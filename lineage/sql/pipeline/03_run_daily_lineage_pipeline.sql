@@ -51,10 +51,12 @@ BEGIN
 -- Single source of truth for the GCP project. The repository, the analyzed
 -- Views (target), and the UDFs all live in one project, so set it here once. The
 -- role-specific *_project_id variables (repository / target / udf) live in the
--- [C] DERIVED section and default to this; override one of them there only in the
--- rare case its objects live in a separate project. (Physical source tables can
--- span projects and are configured separately via source_project_filters below.)
-DECLARE default_project_id STRING DEFAULT 'project_id';
+-- [C] DERIVED section and take this; pin one of them there only in the rare case
+-- its objects live in a separate project. (Physical source tables can span
+-- projects and are configured separately via source_project_filters below.)
+-- Auto-detected from INFORMATION_SCHEMA.SCHEMATA in [C] below (the project the job
+-- runs in); to pin it, set a literal there.
+DECLARE default_project_id STRING;
 -- Repository dataset (holds the lineage_* tables) and UDF dataset (holds the
 -- analyze / fingerprint / render functions created by 01). Both live in the
 -- project above (their *_project_id are in [C]); set the dataset names here.
@@ -179,18 +181,18 @@ DECLARE analysis_exclude_dataset_patterns ARRAY<STRING> DEFAULT [];
 -- ----------------------------------------------------------------------------
 -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
 -- ----------------------------------------------------------------------------
--- UDF function names. These must match the names 01 setup created in udf_dataset;
--- change them only if you deliberately renamed the functions there.
-DECLARE udf_function_name STRING DEFAULT 'lnge_analyze_json';
--- Companion fingerprint UDF (registered by 01). Used to collapse
--- structurally-identical rotating-destination JOBS (temp / ephemeral) to one
--- representative.
-DECLARE udf_fingerprint_function_name STRING DEFAULT 'lnge_fingerprint_sql';
--- Companion dynamic-SQL renderer (registered by 01, same UDF dataset). Invoked
--- dynamically (see render_call_sql) so its location stays DECLARE-configurable
--- via udf_project_id / udf_dataset -- a static function reference cannot use a
--- variable for its project/dataset.
-DECLARE udf_render_function_name STRING DEFAULT 'lnge_render_dynamic_sql';
+-- UDF function names. Assembled in [C] as udf_prefix + 'lnge_' + base + udf_suffix
+-- and must match the names 01 setup created in udf_dataset; keep the udf
+-- prefix/suffix below in step with 01. Routine names allow only letters/digits/'_'
+-- (no '-'; asserted in [C]). The three functions are the main analysis UDF, the
+-- structural-fingerprint UDF (collapses rotating-destination temp/ephemeral JOBS),
+-- and the dynamic-SQL renderer (invoked via render_call_sql so its location stays
+-- DECLARE-configurable).
+DECLARE udf_name_prefix STRING DEFAULT '';
+DECLARE udf_name_suffix STRING DEFAULT '';
+DECLARE udf_function_name STRING;
+DECLARE udf_fingerprint_function_name STRING;
+DECLARE udf_render_function_name STRING;
 -- Parser strictness and the maximum impact rank retained by STEP 4.
 DECLARE parser_strict_mode BOOL DEFAULT FALSE;
 DECLARE configured_max_impact_rank INT64 DEFAULT 100;
@@ -235,11 +237,12 @@ DECLARE ephemeral_object_dataset_label STRING DEFAULT 'ephemeral_generated_sql';
 -- single source of truth set at the top of this file); never set it here.
 DECLARE job_region STRING DEFAULT @@location;
 
--- Role-specific projects. Default to default_project_id ([A]); override a single
--- line here only if that role's objects live in a separate project.
-DECLARE repository_project_id STRING DEFAULT default_project_id;
-DECLARE target_project_id STRING DEFAULT default_project_id;
-DECLARE udf_project_id STRING DEFAULT default_project_id;
+-- Role-specific projects. Take default_project_id (auto-detected below); pin one
+-- to a literal here only if that role's objects live in a separate project (a
+-- non-NULL value wins via COALESCE in the SET block below).
+DECLARE repository_project_id STRING DEFAULT NULL;
+DECLARE target_project_id STRING DEFAULT NULL;
+DECLARE udf_project_id STRING DEFAULT NULL;
 
 -- Target datasets resolved at runtime from target_dataset_*_patterns ([A]) by
 -- scanning INFORMATION_SCHEMA.SCHEMATA (see the resolution block below).
@@ -300,6 +303,30 @@ DECLARE columns_union_sql STRING;
 DECLARE field_paths_union_sql STRING;
 DECLARE tables_union_sql STRING;
 DECLARE source_dataset_count INT64;
+
+-- Auto-detect the running GCP project from INFORMATION_SCHEMA.SCHEMATA
+-- (catalog_name = the project the job runs in). The region-qualified identifier
+-- cannot be parameterized, so it is built from @@location. To pin the project,
+-- replace this SET with a literal. Role projects then take it unless pinned above.
+EXECUTE IMMEDIATE FORMAT(
+  "SELECT DISTINCT catalog_name FROM `region-%s`.INFORMATION_SCHEMA.SCHEMATA LIMIT 1",
+  @@location
+) INTO default_project_id;
+ASSERT default_project_id IS NOT NULL AS
+  'Could not auto-detect the project id from INFORMATION_SCHEMA.SCHEMATA (no datasets in this region?); set default_project_id to a literal.';
+SET repository_project_id = COALESCE(repository_project_id, default_project_id);
+SET target_project_id = COALESCE(target_project_id, default_project_id);
+SET udf_project_id = COALESCE(udf_project_id, default_project_id);
+
+-- UDF names: udf_prefix + 'lnge_' + canonical base + udf_suffix (no marker). Must
+-- match 01. Validity (letters/digits/'_' only) is asserted with the other udf
+-- checks below.
+SET udf_function_name =
+  udf_name_prefix || 'lnge_' || 'analyze_json' || udf_name_suffix;
+SET udf_fingerprint_function_name =
+  udf_name_prefix || 'lnge_' || 'fingerprint_sql' || udf_name_suffix;
+SET udf_render_function_name =
+  udf_name_prefix || 'lnge_' || 'render_dynamic_sql' || udf_name_suffix;
 
 -- Physical table names: prefix + marker + canonical base + suffix.
 -- The 'm_' / 't_' marker literal is inline; edit it to reclassify a table.

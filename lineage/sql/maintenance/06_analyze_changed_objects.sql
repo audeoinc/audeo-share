@@ -56,9 +56,11 @@ BEGIN
   -- --------------------------------------------------------------------------
   -- [A] REQUIRED per deployment / region -- set these
   -- --------------------------------------------------------------------------
-  -- GCP project. Repository, target, and UDFs share one project; set it once.
-  -- The role-specific *_project_id variables live in [C] and default to this.
-  DECLARE default_project_id STRING DEFAULT 'project_id';
+  -- GCP project. Repository, target, and UDFs share one project. The role-specific
+  -- *_project_id variables live in [C] and take this. Auto-detected from
+  -- INFORMATION_SCHEMA.SCHEMATA in [C] (the project the job runs in); to pin it,
+  -- set a literal there.
+  DECLARE default_project_id STRING;
   -- Region (must equal @@location) and the repository / target / UDF datasets.
   DECLARE job_region STRING DEFAULT 'asia-northeast1';
   DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
@@ -68,19 +70,38 @@ BEGIN
   -- --------------------------------------------------------------------------
   -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
   -- --------------------------------------------------------------------------
-  DECLARE udf_function_name STRING DEFAULT 'lnge_analyze_json';
+  -- Analysis UDF name: assembled in [C] as udf_prefix + 'lnge_' + base + udf_suffix
+  -- (must match 01). Routine names allow only letters/digits/'_' (no '-').
+  DECLARE udf_name_prefix STRING DEFAULT '';
+  DECLARE udf_name_suffix STRING DEFAULT '';
+  DECLARE udf_function_name STRING;
   DECLARE parser_strict_mode BOOL DEFAULT FALSE;
 
   -- --------------------------------------------------------------------------
   -- [C] DERIVED / INTERNAL -- from [A]; DO NOT edit
   -- --------------------------------------------------------------------------
-  -- Role-specific projects default to default_project_id ([A]); override a line
-  -- only if that role's objects live in a separate project.
-  DECLARE repository_project_id STRING DEFAULT default_project_id;
-  DECLARE target_project_id STRING DEFAULT default_project_id;
-  DECLARE udf_project_id STRING DEFAULT default_project_id;
+  -- Role-specific projects take default_project_id (auto-detected below); pin a
+  -- line to a literal only if that role's objects live in a separate project.
+  DECLARE repository_project_id STRING DEFAULT NULL;
+  DECLARE target_project_id STRING DEFAULT NULL;
+  DECLARE udf_project_id STRING DEFAULT NULL;
   DECLARE sql_template STRING;
   DECLARE rendered_sql STRING;
+
+  -- Auto-detect the running GCP project from INFORMATION_SCHEMA.SCHEMATA
+  -- (catalog_name). Region-qualified identifier built from @@location; to pin the
+  -- project, replace this SET with a literal. Roles take it unless pinned.
+  EXECUTE IMMEDIATE FORMAT(
+    "SELECT DISTINCT catalog_name FROM `region-%s`.INFORMATION_SCHEMA.SCHEMATA LIMIT 1",
+    @@location
+  ) INTO default_project_id;
+  ASSERT default_project_id IS NOT NULL AS
+    'Could not auto-detect the project id from INFORMATION_SCHEMA.SCHEMATA; set default_project_id to a literal.';
+  SET repository_project_id = COALESCE(repository_project_id, default_project_id);
+  SET target_project_id = COALESCE(target_project_id, default_project_id);
+  SET udf_project_id = COALESCE(udf_project_id, default_project_id);
+  SET udf_function_name =
+    udf_name_prefix || 'lnge_' || 'analyze_json' || udf_name_suffix;
 
   -- Repository tables are resolved using the declared repository identifiers.
   SET @@dataset_project_id = repository_project_id;

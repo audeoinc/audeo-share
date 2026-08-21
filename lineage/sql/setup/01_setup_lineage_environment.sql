@@ -33,9 +33,11 @@ SET @@location = 'asia-northeast1';
 -- [A] REQUIRED per deployment / region -- set these
 -- ----------------------------------------------------------------------------
 -- Single source of truth for the GCP project. The repository, the UDFs, and the
--- smoke-test target all live in one project, so set it here once; the
--- role-specific bootstrap_*_project_id variables live in [C] and default to it.
-DECLARE bootstrap_default_project_id STRING DEFAULT 'project_id';
+-- smoke-test target all live in one project. It is auto-detected from
+-- INFORMATION_SCHEMA.SCHEMATA (the project the job runs in) in [C] below; to pin
+-- it instead, set a literal there. The role-specific bootstrap_*_project_id
+-- variables live in [C] and take this unless individually pinned.
+DECLARE bootstrap_default_project_id STRING;
 -- Repository dataset (holds the lineage_* tables) and UDF dataset (holds the
 -- functions created here). Their *_project_id are in [C].
 DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository';
@@ -54,21 +56,24 @@ DECLARE bootstrap_udf_library_uri STRING DEFAULT
 -- Dataset and UDF names still allow only letters/digits/'_' (no '-').
 DECLARE bootstrap_table_name_prefix STRING DEFAULT '';
 DECLARE bootstrap_table_name_suffix STRING DEFAULT '';
+-- UDF (routine) naming. UDF names are assembled as
+--   udf_prefix + 'lnge_' + canonical base + udf_suffix
+-- in [C], keeping the system 'lnge_' identity. Kept separate from the table
+-- prefix/suffix because routine names allow only letters/digits/'_' (no '-',
+-- unlike backtick-quoted tables); a hyphen here fails the UDF name ASSERT.
+DECLARE bootstrap_udf_name_prefix STRING DEFAULT '';
+DECLARE bootstrap_udf_name_suffix STRING DEFAULT '';
 
 -- ----------------------------------------------------------------------------
 -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
 -- ----------------------------------------------------------------------------
--- UDF function names created in bootstrap_udf_dataset; keep them in step with 03.
-DECLARE bootstrap_udf_function_name STRING DEFAULT 'lnge_analyze_json';
--- Companion scalar UDF that returns a SQL structural fingerprint. Used by
--- 03_run_daily_lineage_pipeline.sql to collapse structurally-identical
--- rotating-destination JOBS (temp / ephemeral). Shares the same GCS bundle.
-DECLARE bootstrap_udf_fingerprint_function_name STRING
-  DEFAULT 'lnge_fingerprint_sql';
--- Companion scalar SQL UDF that expands the dynamic-SQL identifier placeholders.
--- Used by 03_run_daily_lineage_pipeline.sql; created in the same UDF dataset.
-DECLARE bootstrap_udf_render_function_name STRING
-  DEFAULT 'lnge_render_dynamic_sql';
+-- UDF function names created in bootstrap_udf_dataset (assembled in [C] from the
+-- udf prefix/suffix above; keep them in step with 03). The main analysis UDF, the
+-- structural-fingerprint UDF (collapses rotating-destination JOBS; same GCS
+-- bundle), and the dynamic-SQL identifier renderer.
+DECLARE bootstrap_udf_function_name STRING;
+DECLARE bootstrap_udf_fingerprint_function_name STRING;
+DECLARE bootstrap_udf_render_function_name STRING;
 -- Target dataset(s) used only by the UDF smoke test below (to build a
 -- representative physical-column identity). The pipeline's own scan scope is set
 -- in 03_run_daily_lineage_pipeline.sql.
@@ -80,13 +85,14 @@ DECLARE bootstrap_compact_export BOOL DEFAULT TRUE;
 -- ----------------------------------------------------------------------------
 -- [C] DERIVED / INTERNAL -- computed from [A] or @@location; DO NOT edit
 -- ----------------------------------------------------------------------------
--- Role-specific projects default to bootstrap_default_project_id ([A]); override
--- a line only if that role's objects live in a separate project. The repository
+-- Role-specific projects take bootstrap_default_project_id (auto-detected below);
+-- to pin one role to a separate project, set its DEFAULT to a literal here (a
+-- non-NULL value wins via COALESCE in the SET block below). The repository
 -- location mirrors @@location (the single source of truth set at the top).
-DECLARE bootstrap_repository_project_id STRING DEFAULT bootstrap_default_project_id;
+DECLARE bootstrap_repository_project_id STRING DEFAULT NULL;
 DECLARE bootstrap_repository_location STRING DEFAULT @@location;
-DECLARE bootstrap_udf_project_id STRING DEFAULT bootstrap_default_project_id;
-DECLARE bootstrap_target_project_id STRING DEFAULT bootstrap_default_project_id;
+DECLARE bootstrap_udf_project_id STRING DEFAULT NULL;
+DECLARE bootstrap_target_project_id STRING DEFAULT NULL;
 
 -- Repository physical table names, assembled by the SET lines below from
 -- bootstrap_table_name_prefix / _suffix ([A]); plus smoke-test work variables.
@@ -103,6 +109,38 @@ DECLARE repository_dataset_full_name STRING;
 DECLARE smoke_test_result STRING;
 DECLARE smoke_test_status STRING;
 DECLARE fingerprint_smoke_result BOOL;
+
+-- Auto-detect the running GCP project from INFORMATION_SCHEMA.SCHEMATA
+-- (catalog_name = the project the job runs in). The region-qualified identifier
+-- cannot be parameterized, so it is built from @@location. To pin the project,
+-- replace this SET with a literal (e.g. SET bootstrap_default_project_id =
+-- 'my-project';). Role projects then take it unless individually pinned above.
+EXECUTE IMMEDIATE FORMAT(
+  "SELECT DISTINCT catalog_name FROM `region-%s`.INFORMATION_SCHEMA.SCHEMATA LIMIT 1",
+  @@location
+) INTO bootstrap_default_project_id;
+ASSERT bootstrap_default_project_id IS NOT NULL AS
+  'Could not auto-detect the project id from INFORMATION_SCHEMA.SCHEMATA (no datasets in this region?); set bootstrap_default_project_id to a literal.';
+SET bootstrap_repository_project_id =
+  COALESCE(bootstrap_repository_project_id, bootstrap_default_project_id);
+SET bootstrap_udf_project_id =
+  COALESCE(bootstrap_udf_project_id, bootstrap_default_project_id);
+SET bootstrap_target_project_id =
+  COALESCE(bootstrap_target_project_id, bootstrap_default_project_id);
+
+-- UDF names: udf_prefix + 'lnge_' + canonical base + udf_suffix (no marker).
+SET bootstrap_udf_function_name =
+  bootstrap_udf_name_prefix || 'lnge_' || 'analyze_json' || bootstrap_udf_name_suffix;
+SET bootstrap_udf_fingerprint_function_name =
+  bootstrap_udf_name_prefix || 'lnge_' || 'fingerprint_sql' || bootstrap_udf_name_suffix;
+SET bootstrap_udf_render_function_name =
+  bootstrap_udf_name_prefix || 'lnge_' || 'render_dynamic_sql' || bootstrap_udf_name_suffix;
+ASSERT REGEXP_CONTAINS(bootstrap_udf_function_name, r'^[A-Za-z0-9_]+$')
+AS 'Invalid udf function name (letters/digits/_ only; no hyphen in udf prefix/suffix).';
+ASSERT REGEXP_CONTAINS(bootstrap_udf_fingerprint_function_name, r'^[A-Za-z0-9_]+$')
+AS 'Invalid udf fingerprint function name (letters/digits/_ only; no hyphen).';
+ASSERT REGEXP_CONTAINS(bootstrap_udf_render_function_name, r'^[A-Za-z0-9_]+$')
+AS 'Invalid udf render function name (letters/digits/_ only; no hyphen).';
 
 -- Physical table names: prefix + marker + canonical base + suffix.
 -- The 'm_' / 't_' marker literal is inline; edit it to reclassify a table.
