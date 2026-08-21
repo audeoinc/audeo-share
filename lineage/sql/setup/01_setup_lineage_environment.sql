@@ -36,27 +36,36 @@ SET @@location = 'asia-northeast1';
 -- header. Full descriptions follow the block under "Variable notes".
 -- GCP project: auto-detected at runtime; its DECLARE lives in [B] (pin it there
 -- only to run against a different project).
+-- Project-token substitution
+DECLARE bootstrap_project_token_pattern STRING DEFAULT r'^([^-]+)';
 -- Datasets (repository / UDF)
 DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository';
 DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';
--- UDF JS bundle location (GCS)
-DECLARE bootstrap_udf_library_uri STRING DEFAULT
-  'gs://YOUR_BUCKET/YOUR_PATH/lineage_udf_bundle.js';
 -- Table naming (prefix / suffix)
 DECLARE bootstrap_table_name_prefix STRING DEFAULT '';
 DECLARE bootstrap_table_name_suffix STRING DEFAULT '';
 -- UDF naming (prefix / suffix)
 DECLARE bootstrap_udf_name_prefix STRING DEFAULT '';
 DECLARE bootstrap_udf_name_suffix STRING DEFAULT '';
--- Project-token substitution
-DECLARE bootstrap_project_token_pattern STRING DEFAULT r'^([^-]+)';
+-- UDF JS bundle location (GCS)
+DECLARE bootstrap_udf_library_uri STRING DEFAULT
+  'gs://YOUR_BUCKET/YOUR_PATH/lineage_udf_bundle.js';
 --
 -- Variable notes (keyed by name):
+--   bootstrap_project_token_pattern
+--     Project-token substitution. A token extracted from the auto-detected project
+--     id by this regex (REGEXP_EXTRACT; if it has a capture group, group 1 is
+--     used) is substituted for every literal '{project_token}' placeholder in the
+--     dataset names and the table/view/UDF prefixes & suffixes below. Example: for
+--     project id 'mycompany-prod-123', pattern r'-([^-]+)-' yields 'prod', so a
+--     dataset written as 'lineage_repository_{project_token}' becomes
+--     'lineage_repository_prod'. Set the pattern to match your project-id format;
+--     the default takes the first hyphen-delimited segment. An unmatched pattern
+--     yields '' (empty), and any '{project_token}' left unreplaced fails the name
+--     ASSERTs (so typos surface).
 --   bootstrap_repository_dataset / bootstrap_udf_dataset
 --     Repository dataset (holds the lineage_* tables) and UDF dataset (holds the
 --     functions created here). Their *_project_id are in [C].
---   bootstrap_udf_library_uri
---     GCS URI of the uploaded lineage_udf_bundle.js (deployment-specific).
 --   bootstrap_table_name_prefix / bootstrap_table_name_suffix
 --     Repository table naming. Physical table names are assembled as
 --       prefix + marker + canonical base name + suffix
@@ -73,17 +82,8 @@ DECLARE bootstrap_project_token_pattern STRING DEFAULT r'^([^-]+)';
 --     in [C], keeping the system 'lnge_' identity. Kept separate from the table
 --     prefix/suffix because routine names allow only letters/digits/'_' (no '-',
 --     unlike backtick-quoted tables); a hyphen here fails the UDF name ASSERT.
---   bootstrap_project_token_pattern
---     Project-token substitution. A token extracted from the auto-detected project
---     id by this regex (REGEXP_EXTRACT; if it has a capture group, group 1 is
---     used) is substituted for every literal '{project_token}' placeholder in the
---     dataset names and the table/view/UDF prefixes & suffixes below. Example: for
---     project id 'mycompany-prod-123', pattern r'-([^-]+)-' yields 'prod', so a
---     dataset written as 'lineage_repository_{project_token}' becomes
---     'lineage_repository_prod'. Set the pattern to match your project-id format;
---     the default takes the first hyphen-delimited segment. An unmatched pattern
---     yields '' (empty), and any '{project_token}' left unreplaced fails the name
---     ASSERTs (so typos surface).
+--   bootstrap_udf_library_uri
+--     GCS URI of the uploaded lineage_udf_bundle.js (deployment-specific).
 
 -- ----------------------------------------------------------------------------
 -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed

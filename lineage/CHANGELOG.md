@@ -1,5 +1,14 @@
 # 1.5.0-032
 
+- Aligned the `[A]` group order across all scripts to match 03: project-token
+  substitution first, then datasets, then table naming, then UDF naming, then the
+  file-specific groups. For consistency with the "[A] = set per deployment"
+  principle, moved `project_token_pattern` and `udf_name_prefix` / `udf_name_suffix`
+  from `[B]` into `[A]` in 04/06/07 (they were already in `[A]` in 01; 08/09 have no
+  UDF naming). Each variable is still declared exactly once and before the first
+  statement; the `[C]` assembly/REPLACE references are unchanged. Comment/order only;
+  behavior unchanged. SQL-only.
+
 - Consolidated 03's target-side object filters from three overlapping groups into
   two, on the principle that the registry holds exactly the analysis targets (no
   "collect but do not analyze" stage). Removed `target_dataset_include/exclude_

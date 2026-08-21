@@ -149,6 +149,10 @@ npm test                        # build + verify:bundle + test:release を一括
   区切る＋その下に `Variable notes:` として変数名ごとの詳細説明」の形に統一**
   （01/03/04/06/07/08/09 すべて）。設定すべき変数が一覧で見渡せるようにするためで、
   インラインコメントは付けず詳細は下のノートを参照する。挙動はコメント再配置のみで不変。
+  グループ順も全ファイルで統一：project-token → datasets → table naming → UDF naming
+  → ファイル固有（source scope / analysis filter / service accounts 等）。
+  `project_token_pattern` と `udf_name_prefix`/`_suffix` は「デプロイごとに設定する
+  命名ノブ」なので `[A]` に置く（04/06/07 は旧 `[B]` から移動。08/09 は UDF 命名なし）。
   なお `default_project_id`（01/04 は `bootstrap_default_project_id`）は実行時
   自動取得（[C]）でユーザーが通常設定しないため、DECLARE は `[A]` ではなく `[B]` に
   置き、`[A]` にはそれを指すポインタコメントのみ残す（宣言は1回・最初の文より前は不変）。

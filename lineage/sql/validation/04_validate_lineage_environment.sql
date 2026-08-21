@@ -19,16 +19,30 @@ SET @@location = 'asia-northeast1';
 -- header. Full descriptions follow the block under "Variable notes".
 -- GCP project: auto-detected at runtime; its DECLARE lives in [B] (pin it there
 -- only to run against a different project).
+-- Project-token substitution
+DECLARE bootstrap_project_token_pattern STRING DEFAULT r'^([^-]+)';
 -- Datasets (repository / UDF)
 DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository';
 DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';
+-- UDF naming (prefix / suffix)
+DECLARE bootstrap_udf_name_prefix STRING DEFAULT '';
+DECLARE bootstrap_udf_name_suffix STRING DEFAULT '';
 -- UDF JS bundle location (GCS)
 DECLARE bootstrap_udf_library_uri STRING DEFAULT
   'gs://YOUR_BUCKET/YOUR_PATH/lineage_udf_bundle.js';
 --
 -- Variable notes (keyed by name):
+--   bootstrap_project_token_pattern
+--     Project-token substitution regex (keep in step with 01). A token extracted
+--     from the auto-detected project id replaces every '{project_token}' placeholder
+--     in the dataset names and udf prefix/suffix. Default: first hyphen-delimited
+--     segment.
 --   bootstrap_repository_dataset / bootstrap_udf_dataset
 --     Repository dataset and UDF dataset (their *_project_id are in [C]).
+--   bootstrap_udf_name_prefix / bootstrap_udf_name_suffix
+--     Analysis UDF name: assembled in [C] as udf_prefix + 'lnge_' + base +
+--     udf_suffix (keep in step with 01). Routine names allow only letters/digits/'_'
+--     (no '-').
 --   bootstrap_udf_library_uri
 --     GCS URI of the uploaded lineage_udf_bundle.js (deployment-specific).
 
@@ -42,15 +56,9 @@ DECLARE bootstrap_udf_library_uri STRING DEFAULT
 -- project; the role-specific bootstrap_*_project_id variables live in [C] and take
 -- this.
 DECLARE bootstrap_default_project_id STRING;
--- Analysis UDF name: assembled in [C] as udf_prefix + 'lnge_' + base + udf_suffix
+-- Analysis UDF function name: assembled in [C] from the udf prefix/suffix in [A]
 -- (keep in step with 01). Routine names allow only letters/digits/'_' (no '-').
-DECLARE bootstrap_udf_name_prefix STRING DEFAULT '';
-DECLARE bootstrap_udf_name_suffix STRING DEFAULT '';
 DECLARE bootstrap_udf_function_name STRING;
--- Project-token substitution regex (keep in step with 01). A token extracted from
--- the auto-detected project id replaces every '{project_token}' placeholder in the
--- dataset names and udf prefix/suffix. Default: first hyphen-delimited segment.
-DECLARE bootstrap_project_token_pattern STRING DEFAULT r'^([^-]+)';
 DECLARE bootstrap_target_datasets ARRAY<STRING> DEFAULT ['dataset'];
 DECLARE bootstrap_parser_strict_mode BOOL DEFAULT FALSE;
 DECLARE bootstrap_compact_export BOOL DEFAULT TRUE;

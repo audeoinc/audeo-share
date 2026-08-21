@@ -72,26 +72,26 @@ BEGIN
   -- header. Full descriptions follow the block under "Variable notes".
   -- GCP project: auto-detected at runtime; its DECLARE lives in [B] (pin it there
   -- only to run against a different project).
+  -- Project-token substitution
+  DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
   -- Repository dataset & table naming
   DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
   DECLARE table_name_prefix STRING DEFAULT '';
   DECLARE table_name_suffix STRING DEFAULT '';
-  -- Project-token substitution
-  DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
   -- Analysis dataset scope
   DECLARE analysis_include_dataset_patterns ARRAY<STRING> DEFAULT [];
   DECLARE analysis_exclude_dataset_patterns ARRAY<STRING> DEFAULT [];
   --
   -- Variable notes (keyed by name):
-  --   repository_dataset / table_name_prefix / table_name_suffix
-  --     Lineage repository dataset (holds the definition registry). Its physical
-  --     registry table name is assembled from the prefix/suffix -- keep them in
-  --     step with 01 setup and 03 pipeline.
   --   project_token_pattern
   --     Project-token substitution regex (keep in step with 01). A token extracted
   --     from the auto-detected project id replaces every '{project_token}'
   --     placeholder in the dataset name and table prefix/suffix. Default: first
   --     hyphen segment.
+  --   repository_dataset / table_name_prefix / table_name_suffix
+  --     Lineage repository dataset (holds the definition registry). Its physical
+  --     registry table name is assembled from the prefix/suffix -- keep them in
+  --     step with 01 setup and 03 pipeline.
   --   analysis_include_dataset_patterns / analysis_exclude_dataset_patterns
   --     Analysis dataset scope (same meaning as 03). Empty include = every dataset in
   --     the target project / region; exclude drops matches. Matching is

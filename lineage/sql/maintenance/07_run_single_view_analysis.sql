@@ -50,15 +50,29 @@ BEGIN
   -- header. Full descriptions follow the block under "Variable notes".
   -- GCP project: auto-detected at runtime; its DECLARE lives in [B] (pin it there
   -- only to run against a different project).
+  -- Project-token substitution
+  DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
   -- Region, target VIEW & datasets
   DECLARE job_region STRING DEFAULT 'asia-northeast1';
   DECLARE target_dataset STRING DEFAULT 'dataset';
   DECLARE target_view_name STRING DEFAULT 'v_customer_sales_cost_sample';
   DECLARE udf_dataset STRING DEFAULT 'dataset';
+  -- UDF naming (prefix / suffix)
+  DECLARE udf_name_prefix STRING DEFAULT '';
+  DECLARE udf_name_suffix STRING DEFAULT '';
   --
   -- Variable notes (keyed by name):
+  --   project_token_pattern
+  --     Project-token substitution regex (keep in step with 01). A token extracted
+  --     from the auto-detected project id replaces every '{project_token}'
+  --     placeholder in the dataset names and udf prefix/suffix. Default: first
+  --     hyphen segment.
   --   job_region / target_dataset / target_view_name / udf_dataset
   --     Region (must equal @@location) and the single VIEW to analyze.
+  --   udf_name_prefix / udf_name_suffix
+  --     Analysis UDF name: assembled in [C] as udf_prefix + 'lnge_' + base +
+  --     udf_suffix (must match 01). Routine names allow only letters/digits/'_'
+  --     (no '-').
 
   -- --------------------------------------------------------------------------
   -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
@@ -68,15 +82,9 @@ BEGIN
   -- runs in). To pin it, set a literal in [C]. Target and UDFs share one project;
   -- the role-specific *_project_id variables live in [C] and take this.
   DECLARE default_project_id STRING;
-  -- Analysis UDF name: assembled in [C] as udf_prefix + 'lnge_' + base + udf_suffix
+  -- Analysis UDF function name: assembled in [C] from the udf prefix/suffix in [A]
   -- (must match 01). Routine names allow only letters/digits/'_' (no '-').
-  DECLARE udf_name_prefix STRING DEFAULT '';
-  DECLARE udf_name_suffix STRING DEFAULT '';
   DECLARE udf_function_name STRING;
-  -- Project-token substitution regex (keep in step with 01). A token extracted
-  -- from the auto-detected project id replaces every '{project_token}' placeholder
-  -- in the dataset names and udf prefix/suffix. Default: first hyphen segment.
-  DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
   DECLARE parser_strict_mode BOOL DEFAULT FALSE;
   DECLARE compact_export BOOL DEFAULT TRUE;
 

@@ -53,32 +53,32 @@ BEGIN
   -- header. Full descriptions follow the block under "Variable notes".
   -- GCP project: auto-detected at runtime; its DECLARE lives in [B] (pin it there
   -- only to run against a different project).
-  -- Audit log sink (project / dataset / table)
-  DECLARE audit_project_id STRING DEFAULT NULL;
-  DECLARE audit_dataset STRING DEFAULT 'audit_logs';
-  DECLARE audit_table STRING DEFAULT 'cloudaudit_googleapis_com_data_access';
+  -- Project-token substitution
+  DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
   -- Repository dataset & table naming
   DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
   DECLARE table_name_prefix STRING DEFAULT '';
   DECLARE table_name_suffix STRING DEFAULT '';
-  -- Project-token substitution
-  DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
+  -- Audit log sink (project / dataset / table)
+  DECLARE audit_project_id STRING DEFAULT NULL;
+  DECLARE audit_dataset STRING DEFAULT 'audit_logs';
+  DECLARE audit_table STRING DEFAULT 'cloudaudit_googleapis_com_data_access';
   --
   -- Variable notes (keyed by name):
-  --   audit_project_id / audit_dataset / audit_table
-  --     Audit log sink location (the *_data_access table). The sink can
-  --     legitimately live in a separate project, so pin audit_project_id to a
-  --     literal when the sink is elsewhere; otherwise it takes the auto-detected
-  --     default.
-  --   repository_dataset / table_name_prefix / table_name_suffix
-  --     Lineage repository dataset (holds the definition registry). Its physical
-  --     registry table name is assembled from the prefix/suffix -- keep them in
-  --     step with 01 setup.
   --   project_token_pattern
   --     Project-token substitution regex (keep in step with 01). A token extracted
   --     from the auto-detected project id replaces every '{project_token}'
   --     placeholder in the dataset names and table prefix/suffix. Default: first
   --     hyphen segment.
+  --   repository_dataset / table_name_prefix / table_name_suffix
+  --     Lineage repository dataset (holds the definition registry). Its physical
+  --     registry table name is assembled from the prefix/suffix -- keep them in
+  --     step with 01 setup.
+  --   audit_project_id / audit_dataset / audit_table
+  --     Audit log sink location (the *_data_access table). The sink can
+  --     legitimately live in a separate project, so pin audit_project_id to a
+  --     literal when the sink is elsewhere; otherwise it takes the auto-detected
+  --     default.
 
   -- --------------------------------------------------------------------------
   -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
