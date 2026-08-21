@@ -63,6 +63,16 @@ DECLARE bootstrap_table_name_suffix STRING DEFAULT '';
 -- unlike backtick-quoted tables); a hyphen here fails the UDF name ASSERT.
 DECLARE bootstrap_udf_name_prefix STRING DEFAULT '';
 DECLARE bootstrap_udf_name_suffix STRING DEFAULT '';
+-- Project-token substitution. A token extracted from the auto-detected project id
+-- by this regex (REGEXP_EXTRACT; if it has a capture group, group 1 is used) is
+-- substituted for every literal '{project_token}' placeholder in the dataset
+-- names and the table/view/UDF prefixes & suffixes below. Example: for project id
+-- 'mycompany-prod-123', pattern r'-([^-]+)-' yields 'prod', so a dataset written
+-- as 'lineage_repository_{project_token}' becomes 'lineage_repository_prod'. Set
+-- the pattern to match your project-id format; the default takes the first
+-- hyphen-delimited segment. An unmatched pattern yields '' (empty), and any
+-- '{project_token}' left unreplaced fails the name ASSERTs (so typos surface).
+DECLARE bootstrap_project_token_pattern STRING DEFAULT r'^([^-]+)';
 
 -- ----------------------------------------------------------------------------
 -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
@@ -105,6 +115,8 @@ DECLARE table_column_usage STRING;
 DECLARE view_column_usage_impact STRING;
 
 DECLARE repository_dataset_full_name STRING;
+-- Token extracted from the project id (see bootstrap_project_token_pattern).
+DECLARE bootstrap_project_token STRING;
 
 DECLARE smoke_test_result STRING;
 DECLARE smoke_test_status STRING;
@@ -127,6 +139,27 @@ SET bootstrap_udf_project_id =
   COALESCE(bootstrap_udf_project_id, bootstrap_default_project_id);
 SET bootstrap_target_project_id =
   COALESCE(bootstrap_target_project_id, bootstrap_default_project_id);
+
+-- Extract the project token and substitute it for the '{project_token}'
+-- placeholder in every name input BEFORE the names are assembled/asserted.
+SET bootstrap_project_token =
+  COALESCE(REGEXP_EXTRACT(bootstrap_default_project_id, bootstrap_project_token_pattern), '');
+SET bootstrap_repository_dataset =
+  REPLACE(bootstrap_repository_dataset, '{project_token}', bootstrap_project_token);
+SET bootstrap_udf_dataset =
+  REPLACE(bootstrap_udf_dataset, '{project_token}', bootstrap_project_token);
+SET bootstrap_table_name_prefix =
+  REPLACE(bootstrap_table_name_prefix, '{project_token}', bootstrap_project_token);
+SET bootstrap_table_name_suffix =
+  REPLACE(bootstrap_table_name_suffix, '{project_token}', bootstrap_project_token);
+SET bootstrap_udf_name_prefix =
+  REPLACE(bootstrap_udf_name_prefix, '{project_token}', bootstrap_project_token);
+SET bootstrap_udf_name_suffix =
+  REPLACE(bootstrap_udf_name_suffix, '{project_token}', bootstrap_project_token);
+SET bootstrap_target_datasets = ARRAY(
+  SELECT REPLACE(d, '{project_token}', bootstrap_project_token)
+  FROM UNNEST(bootstrap_target_datasets) AS d
+);
 
 -- UDF names: udf_prefix + 'lnge_' + canonical base + udf_suffix (no marker).
 SET bootstrap_udf_function_name =

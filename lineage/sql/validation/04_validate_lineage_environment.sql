@@ -36,6 +36,10 @@ DECLARE bootstrap_udf_library_uri STRING DEFAULT
 DECLARE bootstrap_udf_name_prefix STRING DEFAULT '';
 DECLARE bootstrap_udf_name_suffix STRING DEFAULT '';
 DECLARE bootstrap_udf_function_name STRING;
+-- Project-token substitution regex (keep in step with 01). A token extracted from
+-- the auto-detected project id replaces every '{project_token}' placeholder in the
+-- dataset names and udf prefix/suffix. Default: first hyphen-delimited segment.
+DECLARE bootstrap_project_token_pattern STRING DEFAULT r'^([^-]+)';
 DECLARE bootstrap_target_datasets ARRAY<STRING> DEFAULT ['dataset'];
 DECLARE bootstrap_parser_strict_mode BOOL DEFAULT FALSE;
 DECLARE bootstrap_compact_export BOOL DEFAULT TRUE;
@@ -62,6 +66,8 @@ DECLARE sample_dataset_full_name STRING;
 DECLARE udf_full_name STRING;
 DECLARE smoke_test_result STRING;
 DECLARE smoke_test_status STRING;
+-- Token extracted from the project id (see bootstrap_project_token_pattern).
+DECLARE bootstrap_project_token STRING;
 
 -- Auto-detect the running GCP project from INFORMATION_SCHEMA.SCHEMATA
 -- (catalog_name). Region-qualified identifier built from @@location; to pin the
@@ -78,6 +84,21 @@ SET bootstrap_udf_project_id =
   COALESCE(bootstrap_udf_project_id, bootstrap_default_project_id);
 SET bootstrap_target_project_id =
   COALESCE(bootstrap_target_project_id, bootstrap_default_project_id);
+-- Project-token substitution in the name inputs (before FQN / UDF assembly).
+SET bootstrap_project_token =
+  COALESCE(REGEXP_EXTRACT(bootstrap_default_project_id, bootstrap_project_token_pattern), '');
+SET bootstrap_repository_dataset =
+  REPLACE(bootstrap_repository_dataset, '{project_token}', bootstrap_project_token);
+SET bootstrap_udf_dataset =
+  REPLACE(bootstrap_udf_dataset, '{project_token}', bootstrap_project_token);
+SET bootstrap_udf_name_prefix =
+  REPLACE(bootstrap_udf_name_prefix, '{project_token}', bootstrap_project_token);
+SET bootstrap_udf_name_suffix =
+  REPLACE(bootstrap_udf_name_suffix, '{project_token}', bootstrap_project_token);
+SET bootstrap_target_datasets = ARRAY(
+  SELECT REPLACE(d, '{project_token}', bootstrap_project_token)
+  FROM UNNEST(bootstrap_target_datasets) AS d
+);
 SET repository_dataset_full_name = FORMAT(
   '%s.%s', bootstrap_repository_project_id, bootstrap_repository_dataset
 );

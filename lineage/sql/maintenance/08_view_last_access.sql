@@ -68,6 +68,10 @@ BEGIN
   DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
   DECLARE table_name_prefix STRING DEFAULT '';
   DECLARE table_name_suffix STRING DEFAULT '';
+  -- Project-token substitution regex (keep in step with 01). A token extracted
+  -- from the auto-detected project id replaces every '{project_token}' placeholder
+  -- in the dataset names and table prefix/suffix. Default: first hyphen segment.
+  DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
 
   -- --------------------------------------------------------------------------
   -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
@@ -89,6 +93,8 @@ BEGIN
   DECLARE audit_fqn STRING;
   DECLARE registry_fqn STRING;
   DECLARE rendered_sql STRING;
+  -- Token extracted from the project id (see project_token_pattern).
+  DECLARE project_token STRING;
 
   -- Auto-detect the running GCP project from INFORMATION_SCHEMA.SCHEMATA
   -- (catalog_name). The region-qualified identifier is built from @@location; to
@@ -102,6 +108,16 @@ BEGIN
   SET target_project_id = COALESCE(target_project_id, default_project_id);
   SET repository_project_id = COALESCE(repository_project_id, default_project_id);
   SET audit_project_id = COALESCE(audit_project_id, default_project_id);
+  -- Project-token substitution in the name inputs (before names are used).
+  SET project_token =
+    COALESCE(REGEXP_EXTRACT(default_project_id, project_token_pattern), '');
+  SET repository_dataset =
+    REPLACE(repository_dataset, '{project_token}', project_token);
+  SET audit_dataset = REPLACE(audit_dataset, '{project_token}', project_token);
+  SET table_name_prefix =
+    REPLACE(table_name_prefix, '{project_token}', project_token);
+  SET table_name_suffix =
+    REPLACE(table_name_suffix, '{project_token}', project_token);
 
   ASSERT lookback_days >= 1 AS 'lookback_days must be >= 1.';
 

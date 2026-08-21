@@ -103,6 +103,15 @@ npm test                        # build + verify:bundle + test:release を一括
     別プロジェクト運用時は該当 SET をリテラルに置換。DECLARE-DEFAULT の評価順の都合で
     自動取得は「全 DECLARE の後の最初の実行文」に置く（04 は
     `repository_dataset_full_name` も同ブロックで SET）。debug スクリプトは対象外。
+  - **project token 置換（`{project_token}`）**：自動取得した project id から設定可能な
+    正規表現 `project_token_pattern`（`REGEXP_EXTRACT`・group1）で token を抽出し、
+    データセット名・テーブル/ビュー/UDF の prefix/suffix 中の文字列
+    `{project_token}` を実行時に REPLACE（自動取得直後・名前組み立て/ASSERT より前）。
+    例：project id `mycompany-prod-123` + `r'-([^-]+)-'` → `prod`、
+    `table_name_prefix='{project_token}_'` → `prod_`。既定パターンは先頭ハイフン区切り
+    セグメント。空振り＝token 空、置換漏れの `{project_token}` は `{}` が識別子不可の
+    ため既存の名前 ASSERT が弾く。全7スクリプトの name 入力に適用（01 の token/pattern
+    と揃える）。
 - **03 パイプラインの構造**：`lnge_render_dynamic_sql`（8 プレースホルダ / 9 パラメータ）で
   テンプレート置換 → `EXECUTE IMMEDIATE`。この関数は **01 setup が UDF Dataset（`lnge_analyze_json`
   と同じ場所 = `udf_project_id.udf_dataset`）に作る永続関数**（旧: スクリプト内 TEMP FUNCTION。

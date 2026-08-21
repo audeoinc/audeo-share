@@ -1,5 +1,20 @@
 # 1.5.0-032
 
+- Added a project-token substitution so a piece of the (auto-detected) project id
+  can be embedded in object names. Each script (01/03/04/06/07/08/09) declares a
+  configurable `project_token_pattern` regex; right after the project is
+  auto-detected, `project_token = COALESCE(REGEXP_EXTRACT(<project_id>, pattern),
+  '')` (capture group 1 if present) is computed and every literal `{project_token}`
+  placeholder in the name inputs -- dataset names, and the table / view / UDF
+  prefixes & suffixes -- is `REPLACE`d with it, before the names are assembled and
+  asserted. E.g. project id `mycompany-prod-123` with `r'-([^-]+)-'` yields `prod`,
+  so `table_name_prefix = '{project_token}_'` becomes `prod_`. The default pattern
+  takes the first hyphen-delimited segment. Because `{project_token}` uses braces
+  (not valid in identifiers), any placeholder left unreplaced (empty token or a
+  config typo) is caught by the existing name ASSERTs. Keep each script's pattern
+  in step with 01. SQL-only; the engine bundle is unchanged. Not yet validated
+  against BigQuery.
+
 - Made UDF (routine) names prefix/suffix-configurable, mirroring the tables. New
   dedicated `*_udf_name_prefix` / `*_udf_name_suffix` variables (default '') in 01
   (creates), 03 (daily), and 04/06/07 (which call the analysis UDF) assemble the

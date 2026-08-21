@@ -137,6 +137,14 @@ DECLARE dag_service_accounts ARRAY<STRING> DEFAULT [
 -- UDF names still allow only letters/digits/'_' (BigQuery does not permit '-').
 DECLARE table_name_prefix STRING DEFAULT '';
 DECLARE table_name_suffix STRING DEFAULT '';
+-- Project-token substitution. A token extracted from the auto-detected project id
+-- by this regex (REGEXP_EXTRACT; group 1 if present) replaces every literal
+-- '{project_token}' placeholder in the dataset names and the table/UDF prefixes &
+-- suffixes. E.g. project id 'mycompany-prod-123' with r'-([^-]+)-' -> 'prod', so
+-- table_name_prefix='{project_token}_' becomes 'prod_'. Keep in step with 01. The
+-- default takes the first hyphen-delimited segment; an unmatched pattern yields ''
+-- and any leftover '{project_token}' fails the name ASSERTs.
+DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
 
 -- REGISTRY-stage (collection) exclusion. An object is NOT registered at all if
 -- its NAME matches any *_object_patterns entry OR its DATASET matches any
@@ -303,6 +311,8 @@ DECLARE columns_union_sql STRING;
 DECLARE field_paths_union_sql STRING;
 DECLARE tables_union_sql STRING;
 DECLARE source_dataset_count INT64;
+-- Token extracted from the project id (see project_token_pattern).
+DECLARE project_token STRING;
 
 -- Auto-detect the running GCP project from INFORMATION_SCHEMA.SCHEMATA
 -- (catalog_name = the project the job runs in). The region-qualified identifier
@@ -317,6 +327,20 @@ ASSERT default_project_id IS NOT NULL AS
 SET repository_project_id = COALESCE(repository_project_id, default_project_id);
 SET target_project_id = COALESCE(target_project_id, default_project_id);
 SET udf_project_id = COALESCE(udf_project_id, default_project_id);
+
+-- Extract the project token and substitute it for the '{project_token}'
+-- placeholder in every name input BEFORE the names are assembled/asserted.
+SET project_token =
+  COALESCE(REGEXP_EXTRACT(default_project_id, project_token_pattern), '');
+SET repository_dataset =
+  REPLACE(repository_dataset, '{project_token}', project_token);
+SET udf_dataset = REPLACE(udf_dataset, '{project_token}', project_token);
+SET table_name_prefix =
+  REPLACE(table_name_prefix, '{project_token}', project_token);
+SET table_name_suffix =
+  REPLACE(table_name_suffix, '{project_token}', project_token);
+SET udf_name_prefix = REPLACE(udf_name_prefix, '{project_token}', project_token);
+SET udf_name_suffix = REPLACE(udf_name_suffix, '{project_token}', project_token);
 
 -- UDF names: udf_prefix + 'lnge_' + canonical base + udf_suffix (no marker). Must
 -- match 01. Validity (letters/digits/'_' only) is asserted with the other udf

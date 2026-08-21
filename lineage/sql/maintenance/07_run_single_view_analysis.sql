@@ -65,6 +65,10 @@ BEGIN
   DECLARE udf_name_prefix STRING DEFAULT '';
   DECLARE udf_name_suffix STRING DEFAULT '';
   DECLARE udf_function_name STRING;
+  -- Project-token substitution regex (keep in step with 01). A token extracted
+  -- from the auto-detected project id replaces every '{project_token}' placeholder
+  -- in the dataset names and udf prefix/suffix. Default: first hyphen segment.
+  DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
   DECLARE parser_strict_mode BOOL DEFAULT FALSE;
   DECLARE compact_export BOOL DEFAULT TRUE;
 
@@ -86,6 +90,8 @@ BEGIN
   DECLARE analysis_id STRING DEFAULT GENERATE_UUID();
   DECLARE analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
   DECLARE analysis_status STRING;
+  -- Token extracted from the project id (see project_token_pattern).
+  DECLARE project_token STRING;
 
   -- Auto-detect the running GCP project from INFORMATION_SCHEMA.SCHEMATA
   -- (catalog_name). Region-qualified identifier built from @@location; to pin the
@@ -98,6 +104,13 @@ BEGIN
     'Could not auto-detect the project id from INFORMATION_SCHEMA.SCHEMATA; set default_project_id to a literal.';
   SET target_project_id = COALESCE(target_project_id, default_project_id);
   SET udf_project_id = COALESCE(udf_project_id, default_project_id);
+  -- Project-token substitution in the name inputs (before names are used).
+  SET project_token =
+    COALESCE(REGEXP_EXTRACT(default_project_id, project_token_pattern), '');
+  SET target_dataset = REPLACE(target_dataset, '{project_token}', project_token);
+  SET udf_dataset = REPLACE(udf_dataset, '{project_token}', project_token);
+  SET udf_name_prefix = REPLACE(udf_name_prefix, '{project_token}', project_token);
+  SET udf_name_suffix = REPLACE(udf_name_suffix, '{project_token}', project_token);
   SET udf_function_name =
     udf_name_prefix || 'lnge_' || 'analyze_json' || udf_name_suffix;
 
