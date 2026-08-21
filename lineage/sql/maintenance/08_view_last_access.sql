@@ -49,29 +49,37 @@ BEGIN
   -- --------------------------------------------------------------------------
   -- [A] REQUIRED per deployment / region -- set these
   -- --------------------------------------------------------------------------
-  -- GCP project. The views (target) and the lineage repository share one
-  -- project; set it once. Their *_project_id variables live in [C] and take this.
-  -- Auto-detected from INFORMATION_SCHEMA.SCHEMATA in [C] (the project the job
-  -- runs in); to pin it, set a literal there.
-  DECLARE default_project_id STRING;
-
-  -- Audit log sink location (the *_data_access table). The sink can legitimately
-  -- live in a separate project, so pin audit_project_id to a literal when the sink
-  -- is elsewhere; otherwise it takes the auto-detected default.
-  DECLARE audit_project_id STRING DEFAULT NULL;
-  DECLARE audit_dataset STRING DEFAULT 'audit_logs';
-  DECLARE audit_table STRING DEFAULT 'cloudaudit_googleapis_com_data_access';
-
-  -- Lineage repository dataset (holds the definition registry). Its physical
-  -- registry table name is assembled from the prefix/suffix below -- keep them in
-  -- step with 01 setup.
-  DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
-  DECLARE table_name_prefix STRING DEFAULT '';
-  DECLARE table_name_suffix STRING DEFAULT '';
-  -- Project-token substitution regex (keep in step with 01). A token extracted
-  -- from the auto-detected project id replaces every '{project_token}' placeholder
-  -- in the dataset names and table prefix/suffix. Default: first hyphen segment.
-  DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
+  -- DECLAREs are grouped below, each with a brief inline note; full descriptions
+  -- follow the block under "Variable notes".
+  DECLARE default_project_id STRING;                              -- GCP project; auto-detected in [C]
+  DECLARE audit_project_id STRING DEFAULT NULL;                   -- audit sink project (NULL = default)
+  DECLARE audit_dataset STRING DEFAULT 'audit_logs';             -- audit sink dataset
+  DECLARE audit_table STRING DEFAULT 'cloudaudit_googleapis_com_data_access';  -- audit sink table
+  DECLARE repository_dataset STRING DEFAULT 'lineage_repository'; -- lnge_ registry dataset
+  DECLARE table_name_prefix STRING DEFAULT '';                    -- table name prefix
+  DECLARE table_name_suffix STRING DEFAULT '';                    -- table name suffix
+  DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';       -- {project_token} regex
+  --
+  -- Variable notes (keyed by name):
+  --   default_project_id
+  --     GCP project. The views (target) and the lineage repository share one
+  --     project; set it once. Their *_project_id variables live in [C] and take
+  --     this. Auto-detected from INFORMATION_SCHEMA.SCHEMATA in [C] (the project
+  --     the job runs in); to pin it, set a literal there.
+  --   audit_project_id / audit_dataset / audit_table
+  --     Audit log sink location (the *_data_access table). The sink can
+  --     legitimately live in a separate project, so pin audit_project_id to a
+  --     literal when the sink is elsewhere; otherwise it takes the auto-detected
+  --     default.
+  --   repository_dataset / table_name_prefix / table_name_suffix
+  --     Lineage repository dataset (holds the definition registry). Its physical
+  --     registry table name is assembled from the prefix/suffix -- keep them in
+  --     step with 01 setup.
+  --   project_token_pattern
+  --     Project-token substitution regex (keep in step with 01). A token extracted
+  --     from the auto-detected project id replaces every '{project_token}'
+  --     placeholder in the dataset names and table prefix/suffix. Default: first
+  --     hyphen segment.
 
   -- --------------------------------------------------------------------------
   -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed

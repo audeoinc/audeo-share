@@ -15,18 +15,25 @@ SET @@location = 'asia-northeast1';
 -- ----------------------------------------------------------------------------
 -- [A] REQUIRED per deployment / region -- set these
 -- ----------------------------------------------------------------------------
--- Single source of truth for the GCP project. The repository, the UDFs, and the
--- target all live in one project. The role-specific bootstrap_*_project_id
--- variables live in [C] and take this. Auto-detected from
--- INFORMATION_SCHEMA.SCHEMATA in [C] (the project the job runs in); to pin it, set
--- a literal there.
-DECLARE bootstrap_default_project_id STRING;
--- Repository dataset and UDF dataset (their *_project_id are in [C]).
-DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository';
-DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';
--- GCS URI of the uploaded lineage_udf_bundle.js (deployment-specific).
+-- DECLAREs are grouped below, each with a brief inline note; full descriptions
+-- follow the block under "Variable notes".
+DECLARE bootstrap_default_project_id STRING;                              -- GCP project; auto-detected in [C]
+DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository'; -- lnge_ tables dataset
+DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';                   -- UDF dataset
 DECLARE bootstrap_udf_library_uri STRING DEFAULT
-  'gs://YOUR_BUCKET/YOUR_PATH/lineage_udf_bundle.js';
+  'gs://YOUR_BUCKET/YOUR_PATH/lineage_udf_bundle.js';                     -- GCS URI of the JS bundle
+--
+-- Variable notes (keyed by name):
+--   bootstrap_default_project_id
+--     Single source of truth for the GCP project. The repository, the UDFs, and
+--     the target all live in one project. The role-specific bootstrap_*_project_id
+--     variables live in [C] and take this. Auto-detected from
+--     INFORMATION_SCHEMA.SCHEMATA in [C] (the project the job runs in); to pin it,
+--     set a literal there.
+--   bootstrap_repository_dataset / bootstrap_udf_dataset
+--     Repository dataset and UDF dataset (their *_project_id are in [C]).
+--   bootstrap_udf_library_uri
+--     GCS URI of the uploaded lineage_udf_bundle.js (deployment-specific).
 
 -- ----------------------------------------------------------------------------
 -- [B] BEHAVIOR OPTIONS -- keep aligned with 01 / 03; defaults are safe

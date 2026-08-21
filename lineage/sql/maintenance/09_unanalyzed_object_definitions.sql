@@ -68,29 +68,36 @@ BEGIN
   -- --------------------------------------------------------------------------
   -- [A] REQUIRED per deployment / region -- set these
   -- --------------------------------------------------------------------------
-  -- GCP project. The target objects (views / generated tables) and the lineage
-  -- repository share one project. Their *_project_id variables live in [C] and
-  -- take this. Auto-detected from INFORMATION_SCHEMA.SCHEMATA in [C] (the project
-  -- the job runs in); to pin it, set a literal there.
-  DECLARE default_project_id STRING;
-
-  -- Lineage repository dataset (holds the definition registry). Its physical
-  -- registry table name is assembled from the prefix/suffix below -- keep them in
-  -- step with 01 setup and 03 pipeline.
-  DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
-  DECLARE table_name_prefix STRING DEFAULT '';
-  DECLARE table_name_suffix STRING DEFAULT '';
-  -- Project-token substitution regex (keep in step with 01). A token extracted
-  -- from the auto-detected project id replaces every '{project_token}' placeholder
-  -- in the dataset name and table prefix/suffix. Default: first hyphen segment.
-  DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
-
-  -- Target dataset scope (same meaning as 03). Empty include = every dataset in
-  -- the target project / region; exclude drops matches. Matching is
-  -- case-insensitive (name and pattern are lowercased). Confines BOTH the VIEWS
-  -- union and the generated-table jobs to these datasets.
-  DECLARE target_dataset_include_patterns ARRAY<STRING> DEFAULT [];
-  DECLARE target_dataset_exclude_patterns ARRAY<STRING> DEFAULT [];
+  -- DECLAREs are grouped below, each with a brief inline note; full descriptions
+  -- follow the block under "Variable notes".
+  DECLARE default_project_id STRING;                              -- GCP project; auto-detected in [C]
+  DECLARE repository_dataset STRING DEFAULT 'lineage_repository'; -- lnge_ registry dataset
+  DECLARE table_name_prefix STRING DEFAULT '';                    -- table name prefix
+  DECLARE table_name_suffix STRING DEFAULT '';                    -- table name suffix
+  DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';       -- {project_token} regex
+  DECLARE target_dataset_include_patterns ARRAY<STRING> DEFAULT []; -- dataset include regexes
+  DECLARE target_dataset_exclude_patterns ARRAY<STRING> DEFAULT []; -- dataset exclude regexes
+  --
+  -- Variable notes (keyed by name):
+  --   default_project_id
+  --     GCP project. The target objects (views / generated tables) and the lineage
+  --     repository share one project. Their *_project_id variables live in [C] and
+  --     take this. Auto-detected from INFORMATION_SCHEMA.SCHEMATA in [C] (the
+  --     project the job runs in); to pin it, set a literal there.
+  --   repository_dataset / table_name_prefix / table_name_suffix
+  --     Lineage repository dataset (holds the definition registry). Its physical
+  --     registry table name is assembled from the prefix/suffix -- keep them in
+  --     step with 01 setup and 03 pipeline.
+  --   project_token_pattern
+  --     Project-token substitution regex (keep in step with 01). A token extracted
+  --     from the auto-detected project id replaces every '{project_token}'
+  --     placeholder in the dataset name and table prefix/suffix. Default: first
+  --     hyphen segment.
+  --   target_dataset_include_patterns / target_dataset_exclude_patterns
+  --     Target dataset scope (same meaning as 03). Empty include = every dataset in
+  --     the target project / region; exclude drops matches. Matching is
+  --     case-insensitive (name and pattern are lowercased). Confines BOTH the VIEWS
+  --     union and the generated-table jobs to these datasets.
 
   -- --------------------------------------------------------------------------
   -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed

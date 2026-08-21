@@ -1,5 +1,16 @@
 # 1.5.0-032
 
+- Reorganized each script's `[A]` (required per-deployment) config section into a
+  consistent "grouped DECLAREs + variable notes" layout (01/03/04/06/07/08/09).
+  Previously `[A]` interleaved a multi-line description comment before each DECLARE;
+  now all the DECLAREs sit in one contiguous block (each with a short trailing
+  inline note) so the settable variables are visible at a glance, and the full
+  descriptions follow the block under a `Variable notes:` header keyed by variable
+  name. Comment/whitespace reorganization only -- every variable is still declared
+  exactly once, all DECLAREs still precede the first statement, and no defaults
+  changed, so behavior is unchanged. `[B]`/`[C]` are untouched. SQL-only; the
+  engine bundle is unchanged.
+
 - Added a project-token substitution so a piece of the (auto-detected) project id
   can be embedded in object names. Each script (01/03/04/06/07/08/09) declares a
   configurable `project_token_pattern` regex; right after the project is

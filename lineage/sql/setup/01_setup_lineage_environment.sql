@@ -32,47 +32,59 @@ SET @@location = 'asia-northeast1';
 -- ----------------------------------------------------------------------------
 -- [A] REQUIRED per deployment / region -- set these
 -- ----------------------------------------------------------------------------
--- Single source of truth for the GCP project. The repository, the UDFs, and the
--- smoke-test target all live in one project. It is auto-detected from
--- INFORMATION_SCHEMA.SCHEMATA (the project the job runs in) in [C] below; to pin
--- it instead, set a literal there. The role-specific bootstrap_*_project_id
--- variables live in [C] and take this unless individually pinned.
-DECLARE bootstrap_default_project_id STRING;
--- Repository dataset (holds the lineage_* tables) and UDF dataset (holds the
--- functions created here). Their *_project_id are in [C].
-DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository';
-DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';
--- GCS URI of the uploaded lineage_udf_bundle.js (deployment-specific).
+-- DECLAREs are grouped below, each with a brief inline note; full descriptions
+-- follow the block under "Variable notes".
+DECLARE bootstrap_default_project_id STRING;                              -- GCP project; auto-detected in [C]
+DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository'; -- lnge_ tables dataset
+DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';                   -- UDF dataset
 DECLARE bootstrap_udf_library_uri STRING DEFAULT
-  'gs://YOUR_BUCKET/YOUR_PATH/lineage_udf_bundle.js';
--- Repository table naming. Physical table names are assembled as
---   prefix + marker + canonical base name + suffix
--- in the SET lines below. The prefix and suffix change per environment (e.g. a
--- region tag like suffix='_tky'); the master/transaction marker ('m_' / 't_') is
--- an inline literal in each SET line (edit it only to reclassify a table).
--- Include any '_' separators in the prefix and suffix; leave a segment empty to
--- omit it. Allowed characters: letters, digits, '_', and '-' (every reference to
--- these tables is backtick-quoted, so a hyphen like suffix='-tky' is safe).
--- Dataset and UDF names still allow only letters/digits/'_' (no '-').
-DECLARE bootstrap_table_name_prefix STRING DEFAULT '';
-DECLARE bootstrap_table_name_suffix STRING DEFAULT '';
--- UDF (routine) naming. UDF names are assembled as
---   udf_prefix + 'lnge_' + canonical base + udf_suffix
--- in [C], keeping the system 'lnge_' identity. Kept separate from the table
--- prefix/suffix because routine names allow only letters/digits/'_' (no '-',
--- unlike backtick-quoted tables); a hyphen here fails the UDF name ASSERT.
-DECLARE bootstrap_udf_name_prefix STRING DEFAULT '';
-DECLARE bootstrap_udf_name_suffix STRING DEFAULT '';
--- Project-token substitution. A token extracted from the auto-detected project id
--- by this regex (REGEXP_EXTRACT; if it has a capture group, group 1 is used) is
--- substituted for every literal '{project_token}' placeholder in the dataset
--- names and the table/view/UDF prefixes & suffixes below. Example: for project id
--- 'mycompany-prod-123', pattern r'-([^-]+)-' yields 'prod', so a dataset written
--- as 'lineage_repository_{project_token}' becomes 'lineage_repository_prod'. Set
--- the pattern to match your project-id format; the default takes the first
--- hyphen-delimited segment. An unmatched pattern yields '' (empty), and any
--- '{project_token}' left unreplaced fails the name ASSERTs (so typos surface).
-DECLARE bootstrap_project_token_pattern STRING DEFAULT r'^([^-]+)';
+  'gs://YOUR_BUCKET/YOUR_PATH/lineage_udf_bundle.js';                     -- GCS URI of the JS bundle
+DECLARE bootstrap_table_name_prefix STRING DEFAULT '';                    -- table name prefix
+DECLARE bootstrap_table_name_suffix STRING DEFAULT '';                    -- table name suffix
+DECLARE bootstrap_udf_name_prefix STRING DEFAULT '';                      -- UDF name prefix
+DECLARE bootstrap_udf_name_suffix STRING DEFAULT '';                      -- UDF name suffix
+DECLARE bootstrap_project_token_pattern STRING DEFAULT r'^([^-]+)';       -- {project_token} regex
+--
+-- Variable notes (keyed by name):
+--   bootstrap_default_project_id
+--     Single source of truth for the GCP project. The repository, the UDFs, and
+--     the smoke-test target all live in one project. It is auto-detected from
+--     INFORMATION_SCHEMA.SCHEMATA (the project the job runs in) in [C] below; to
+--     pin it instead, set a literal there. The role-specific
+--     bootstrap_*_project_id variables live in [C] and take this unless
+--     individually pinned.
+--   bootstrap_repository_dataset / bootstrap_udf_dataset
+--     Repository dataset (holds the lineage_* tables) and UDF dataset (holds the
+--     functions created here). Their *_project_id are in [C].
+--   bootstrap_udf_library_uri
+--     GCS URI of the uploaded lineage_udf_bundle.js (deployment-specific).
+--   bootstrap_table_name_prefix / bootstrap_table_name_suffix
+--     Repository table naming. Physical table names are assembled as
+--       prefix + marker + canonical base name + suffix
+--     in the SET lines below. The prefix and suffix change per environment (e.g. a
+--     region tag like suffix='_tky'); the master/transaction marker ('m_' / 't_')
+--     is an inline literal in each SET line (edit it only to reclassify a table).
+--     Include any '_' separators in the prefix and suffix; leave a segment empty
+--     to omit it. Allowed characters: letters, digits, '_', and '-' (every
+--     reference to these tables is backtick-quoted, so a hyphen like suffix='-tky'
+--     is safe). Dataset and UDF names still allow only letters/digits/'_' (no '-').
+--   bootstrap_udf_name_prefix / bootstrap_udf_name_suffix
+--     UDF (routine) naming. UDF names are assembled as
+--       udf_prefix + 'lnge_' + canonical base + udf_suffix
+--     in [C], keeping the system 'lnge_' identity. Kept separate from the table
+--     prefix/suffix because routine names allow only letters/digits/'_' (no '-',
+--     unlike backtick-quoted tables); a hyphen here fails the UDF name ASSERT.
+--   bootstrap_project_token_pattern
+--     Project-token substitution. A token extracted from the auto-detected project
+--     id by this regex (REGEXP_EXTRACT; if it has a capture group, group 1 is
+--     used) is substituted for every literal '{project_token}' placeholder in the
+--     dataset names and the table/view/UDF prefixes & suffixes below. Example: for
+--     project id 'mycompany-prod-123', pattern r'-([^-]+)-' yields 'prod', so a
+--     dataset written as 'lineage_repository_{project_token}' becomes
+--     'lineage_repository_prod'. Set the pattern to match your project-id format;
+--     the default takes the first hyphen-delimited segment. An unmatched pattern
+--     yields '' (empty), and any '{project_token}' left unreplaced fails the name
+--     ASSERTs (so typos surface).
 
 -- ----------------------------------------------------------------------------
 -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed

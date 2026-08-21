@@ -48,38 +48,12 @@ BEGIN
 -- ----------------------------------------------------------------------------
 -- [A] REQUIRED per deployment / region -- set these
 -- ----------------------------------------------------------------------------
--- Single source of truth for the GCP project. The repository, the analyzed
--- Views (target), and the UDFs all live in one project, so set it here once. The
--- role-specific *_project_id variables (repository / target / udf) live in the
--- [C] DERIVED section and take this; pin one of them there only in the rare case
--- its objects live in a separate project. (Physical source tables can span
--- projects and are configured separately via source_project_filters below.)
--- Auto-detected from INFORMATION_SCHEMA.SCHEMATA in [C] below (the project the job
--- runs in); to pin it, set a literal there.
-DECLARE default_project_id STRING;
--- Repository dataset (holds the lineage_* tables) and UDF dataset (holds the
--- analyze / fingerprint / render functions created by 01). Both live in the
--- project above (their *_project_id are in [C]); set the dataset names here.
-DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
-DECLARE udf_dataset STRING DEFAULT 'dataset';
-
--- Projects that hold physical source tables, each with include/exclude
--- dataset-name regex patterns (same convention as target_dataset_*_patterns:
--- case-insensitive REGEXP_CONTAINS, multiple patterns per list),
--- because the dataset naming differs per project and some datasets must be
--- skipped (e.g. empty or inaccessible ones that would raise access-denied when
--- their COLUMNS are read). COLUMNS / COLUMN_FIELD_PATHS / TABLES are
--- dataset-scoped, so for each entry the matching same-region datasets are
--- enumerated from INFORMATION_SCHEMA.SCHEMATA and unioned. Include the target
--- project and every other project whose tables are sources; all must be in
--- job_region.
---   dataset_include_patterns : keep datasets matching ANY pattern
---                              (empty array = every dataset in the region).
---   dataset_exclude_patterns : drop datasets matching ANY pattern
---                              (empty array = exclude none).
--- Matching is case-insensitive (name and pattern are lowercased); write patterns
--- as raw strings in any case, e.g. r'^mart_'.
-DECLARE source_project_filters
+-- DECLAREs are grouped below, each with a brief inline note; full descriptions
+-- follow the block under "Variable notes".
+DECLARE default_project_id STRING;                              -- GCP project; auto-detected in [C]
+DECLARE repository_dataset STRING DEFAULT 'lineage_repository'; -- lnge_ tables dataset
+DECLARE udf_dataset STRING DEFAULT 'dataset';                   -- UDF dataset
+DECLARE source_project_filters                                  -- physical-source projects + dataset filters
   ARRAY<STRUCT<
     project_id STRING,
     dataset_include_patterns ARRAY<STRING>,
@@ -92,99 +66,133 @@ DECLARE source_project_filters
       CAST([] AS ARRAY<STRING>) AS dataset_exclude_patterns
     )
   ];
-
--- Target datasets holding the Views to analyze (single target project). These
--- are NOT listed explicitly: they are resolved at runtime by scanning the target
--- project's datasets in job_region (INFORMATION_SCHEMA.SCHEMATA) and filtering by
--- the regex patterns below. Each resolved dataset is scanned via
--- `target_project.dataset.INFORMATION_SCHEMA.VIEWS`.
---   include: empty array = every dataset in the region; otherwise keep datasets
---            whose name matches ANY include pattern.
---   exclude: empty array = exclude none; drop datasets matching ANY pattern.
--- Matching is case-insensitive (both the dataset name and the pattern are
--- lowercased before REGEXP_CONTAINS), so patterns may be written in any case.
--- Example: only "mart"/"dwh" datasets, excluding temp/test:
---   include [r'^mart_', r'^dwh_'], exclude [r'_tmp$', r'test']
-DECLARE target_dataset_include_patterns ARRAY<STRING> DEFAULT [];
-DECLARE target_dataset_exclude_patterns ARRAY<STRING> DEFAULT [];
-
--- STEP 2 service accounts (consumed only when process_generated_tables = TRUE).
--- Previously read from the lineage_execution_account_config table; declared here
--- so the whole pipeline is configured in this single file.
---   scheduled_query_service_accounts : accounts that run BigQuery Scheduled
---     Queries (also gated by the scheduled_query label unless
---     require_scheduled_query_label = FALSE, in [B]).
---   dag_service_accounts             : accounts that run DAG / Airflow jobs.
--- Both arrays must be non-empty (asserted in STEP 2).
-DECLARE scheduled_query_service_accounts ARRAY<STRING> DEFAULT [
+DECLARE target_dataset_include_patterns ARRAY<STRING> DEFAULT [];  -- target dataset include regexes
+DECLARE target_dataset_exclude_patterns ARRAY<STRING> DEFAULT [];  -- target dataset exclude regexes
+DECLARE scheduled_query_service_accounts ARRAY<STRING> DEFAULT [   -- Scheduled Query SAs (STEP 2)
   'project_id@appspot.gserviceaccount.com'
 ];
-DECLARE dag_service_accounts ARRAY<STRING> DEFAULT [
+DECLARE dag_service_accounts ARRAY<STRING> DEFAULT [              -- DAG / Airflow SAs (STEP 2)
   'project_id@appspot.gserviceaccount.com'
 ];
-
--- Repository table naming. Physical table names are assembled as
---   prefix + marker + canonical base name + suffix
--- in the SET lines further below. The prefix and suffix change per environment
--- (e.g. a region tag like suffix='_tky'), so they are variables here. The
--- master/transaction marker ('m_' / 't_') rarely changes, so it is written
--- directly as a literal in each SET line; edit that literal only when a table
--- must be reclassified. Include any '_' separators in the prefix and suffix.
--- Example: prefix='ope_', marker 'm_', suffix='_tky' yields
--- ope_lnge_m_definition_registry_tky. Leave a segment empty to omit it.
--- Allowed characters: letters, digits, '_', and '-' (every reference to these
--- tables is backtick-quoted, so a hyphen like suffix='-tky' is safe). Dataset and
--- UDF names still allow only letters/digits/'_' (BigQuery does not permit '-').
-DECLARE table_name_prefix STRING DEFAULT '';
-DECLARE table_name_suffix STRING DEFAULT '';
--- Project-token substitution. A token extracted from the auto-detected project id
--- by this regex (REGEXP_EXTRACT; group 1 if present) replaces every literal
--- '{project_token}' placeholder in the dataset names and the table/UDF prefixes &
--- suffixes. E.g. project id 'mycompany-prod-123' with r'-([^-]+)-' -> 'prod', so
--- table_name_prefix='{project_token}_' becomes 'prod_'. Keep in step with 01. The
--- default takes the first hyphen-delimited segment; an unmatched pattern yields ''
--- and any leftover '{project_token}' fails the name ASSERTs.
-DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
-
--- REGISTRY-stage (collection) exclusion. An object is NOT registered at all if
--- its NAME matches any *_object_patterns entry OR its DATASET matches any
--- *_dataset_patterns entry (exclusion is OR across the two dimensions). Views
--- are dropped in STEP 1 before entering the definition registry (an
--- already-registered View is deactivated), and generated TABLEs are dropped in
--- STEP 2 before entering the job / definition registry (name matched on the
--- destination table, dataset on the destination dataset). This is stronger than
--- the analysis_* filters below (which keep the row and only skip analysis).
--- REGEXP_CONTAINS = partial match; matching is case-insensitive (value and
--- pattern are lowercased), so write patterns as raw strings in any case. Empty
--- array = exclude nothing on that dimension.
---   object e.g. names ending in a digit and names containing "test":
---          [r'[0-9]$', r'test']
---   dataset e.g. whole staging/scratch datasets: [r'^stg_', r'_scratch$']
-DECLARE registry_exclude_object_patterns ARRAY<STRING> DEFAULT [];
-DECLARE registry_exclude_dataset_patterns ARRAY<STRING> DEFAULT [];
-
--- ANALYSIS-stage filters. Applied when selecting which registered objects (VIEWs
--- and, when process_generated_tables = TRUE, generated TABLEs) to analyze.
--- Matched objects STAY in the definition registry and keep change tracking; only
--- lineage analysis is gated. The object NAME (object_name) and the DATASET
--- (object_dataset) are filtered independently: the *_object_patterns act on the
--- name and the *_dataset_patterns act on the dataset. REGEXP_CONTAINS = partial
--- match; matching is case-insensitive (value and pattern are lowercased), so
--- write patterns as raw strings in any case, e.g. r'^stg_'. An object is analyzed
--- when it passes BOTH dimensions' include gate AND is excluded by NEITHER
--- dimension: (name-include empty OR name matches) AND (dataset-include empty OR
--- dataset matches) AND (name matches no name-exclude) AND (dataset matches no
--- dataset-exclude). Non-matching objects stay in the registry but are not
--- analyzed.
---   include: empty array = no constraint on that dimension; otherwise analyze
---            only matches (handy for scoping a run, e.g. object [r'^v_sales'] or
---            dataset [r'^mart_']).
---   exclude: empty array = exclude nothing, e.g. object [r'^stg_', r'_tmp$'] or
---            dataset [r'_staging$'].
-DECLARE analysis_include_object_patterns ARRAY<STRING> DEFAULT [];
-DECLARE analysis_exclude_object_patterns ARRAY<STRING> DEFAULT [];
-DECLARE analysis_include_dataset_patterns ARRAY<STRING> DEFAULT [];
-DECLARE analysis_exclude_dataset_patterns ARRAY<STRING> DEFAULT [];
+DECLARE table_name_prefix STRING DEFAULT '';                     -- table name prefix
+DECLARE table_name_suffix STRING DEFAULT '';                     -- table name suffix
+DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';        -- {project_token} regex
+DECLARE registry_exclude_object_patterns ARRAY<STRING> DEFAULT [];  -- registry-stage name excludes
+DECLARE registry_exclude_dataset_patterns ARRAY<STRING> DEFAULT []; -- registry-stage dataset excludes
+DECLARE analysis_include_object_patterns ARRAY<STRING> DEFAULT [];  -- analysis-stage name includes
+DECLARE analysis_exclude_object_patterns ARRAY<STRING> DEFAULT [];  -- analysis-stage name excludes
+DECLARE analysis_include_dataset_patterns ARRAY<STRING> DEFAULT []; -- analysis-stage dataset includes
+DECLARE analysis_exclude_dataset_patterns ARRAY<STRING> DEFAULT []; -- analysis-stage dataset excludes
+--
+-- Variable notes (keyed by name):
+--   default_project_id
+--     Single source of truth for the GCP project. The repository, the analyzed
+--     Views (target), and the UDFs all live in one project, so set it here once.
+--     The role-specific *_project_id variables (repository / target / udf) live in
+--     the [C] DERIVED section and take this; pin one of them there only in the rare
+--     case its objects live in a separate project. (Physical source tables can span
+--     projects and are configured separately via source_project_filters.)
+--     Auto-detected from INFORMATION_SCHEMA.SCHEMATA in [C] below (the project the
+--     job runs in); to pin it, set a literal there.
+--   repository_dataset / udf_dataset
+--     Repository dataset (holds the lineage_* tables) and UDF dataset (holds the
+--     analyze / fingerprint / render functions created by 01). Both live in the
+--     project above (their *_project_id are in [C]); set the dataset names here.
+--   source_project_filters
+--     Projects that hold physical source tables, each with include/exclude
+--     dataset-name regex patterns (same convention as target_dataset_*_patterns:
+--     case-insensitive REGEXP_CONTAINS, multiple patterns per list), because the
+--     dataset naming differs per project and some datasets must be skipped (e.g.
+--     empty or inaccessible ones that would raise access-denied when their COLUMNS
+--     are read). COLUMNS / COLUMN_FIELD_PATHS / TABLES are dataset-scoped, so for
+--     each entry the matching same-region datasets are enumerated from
+--     INFORMATION_SCHEMA.SCHEMATA and unioned. Include the target project and every
+--     other project whose tables are sources; all must be in job_region.
+--       dataset_include_patterns : keep datasets matching ANY pattern
+--                                  (empty array = every dataset in the region).
+--       dataset_exclude_patterns : drop datasets matching ANY pattern
+--                                  (empty array = exclude none).
+--     Matching is case-insensitive (name and pattern are lowercased); write
+--     patterns as raw strings in any case, e.g. r'^mart_'.
+--   target_dataset_include_patterns / target_dataset_exclude_patterns
+--     Target datasets holding the Views to analyze (single target project). These
+--     are NOT listed explicitly: they are resolved at runtime by scanning the
+--     target project's datasets in job_region (INFORMATION_SCHEMA.SCHEMATA) and
+--     filtering by the regex patterns. Each resolved dataset is scanned via
+--     `target_project.dataset.INFORMATION_SCHEMA.VIEWS`.
+--       include: empty array = every dataset in the region; otherwise keep datasets
+--                whose name matches ANY include pattern.
+--       exclude: empty array = exclude none; drop datasets matching ANY pattern.
+--     Matching is case-insensitive (both the dataset name and the pattern are
+--     lowercased before REGEXP_CONTAINS), so patterns may be written in any case.
+--     Example: only "mart"/"dwh" datasets, excluding temp/test:
+--       include [r'^mart_', r'^dwh_'], exclude [r'_tmp$', r'test']
+--   scheduled_query_service_accounts / dag_service_accounts
+--     STEP 2 service accounts (consumed only when process_generated_tables = TRUE).
+--     Previously read from the lineage_execution_account_config table; declared
+--     here so the whole pipeline is configured in this single file.
+--       scheduled_query_service_accounts : accounts that run BigQuery Scheduled
+--         Queries (also gated by the scheduled_query label unless
+--         require_scheduled_query_label = FALSE, in [B]).
+--       dag_service_accounts             : accounts that run DAG / Airflow jobs.
+--     Both arrays must be non-empty (asserted in STEP 2).
+--   table_name_prefix / table_name_suffix
+--     Repository table naming. Physical table names are assembled as
+--       prefix + marker + canonical base name + suffix
+--     in the SET lines further below. The prefix and suffix change per environment
+--     (e.g. a region tag like suffix='_tky'), so they are variables here. The
+--     master/transaction marker ('m_' / 't_') rarely changes, so it is written
+--     directly as a literal in each SET line; edit that literal only when a table
+--     must be reclassified. Include any '_' separators in the prefix and suffix.
+--     Example: prefix='ope_', marker 'm_', suffix='_tky' yields
+--     ope_lnge_m_definition_registry_tky. Leave a segment empty to omit it.
+--     Allowed characters: letters, digits, '_', and '-' (every reference to these
+--     tables is backtick-quoted, so a hyphen like suffix='-tky' is safe). Dataset
+--     and UDF names still allow only letters/digits/'_' (BigQuery does not permit
+--     '-').
+--   project_token_pattern
+--     Project-token substitution. A token extracted from the auto-detected project
+--     id by this regex (REGEXP_EXTRACT; group 1 if present) replaces every literal
+--     '{project_token}' placeholder in the dataset names and the table/UDF prefixes
+--     & suffixes. E.g. project id 'mycompany-prod-123' with r'-([^-]+)-' -> 'prod',
+--     so table_name_prefix='{project_token}_' becomes 'prod_'. Keep in step with
+--     01. The default takes the first hyphen-delimited segment; an unmatched
+--     pattern yields '' and any leftover '{project_token}' fails the name ASSERTs.
+--   registry_exclude_object_patterns / registry_exclude_dataset_patterns
+--     REGISTRY-stage (collection) exclusion. An object is NOT registered at all if
+--     its NAME matches any *_object_patterns entry OR its DATASET matches any
+--     *_dataset_patterns entry (exclusion is OR across the two dimensions). Views
+--     are dropped in STEP 1 before entering the definition registry (an already-
+--     registered View is deactivated), and generated TABLEs are dropped in STEP 2
+--     before entering the job / definition registry (name matched on the
+--     destination table, dataset on the destination dataset). This is stronger than
+--     the analysis_* filters below (which keep the row and only skip analysis).
+--     REGEXP_CONTAINS = partial match; matching is case-insensitive (value and
+--     pattern are lowercased), so write patterns as raw strings in any case. Empty
+--     array = exclude nothing on that dimension.
+--       object e.g. names ending in a digit and names containing "test":
+--              [r'[0-9]$', r'test']
+--       dataset e.g. whole staging/scratch datasets: [r'^stg_', r'_scratch$']
+--   analysis_include_object_patterns / analysis_exclude_object_patterns /
+--   analysis_include_dataset_patterns / analysis_exclude_dataset_patterns
+--     ANALYSIS-stage filters. Applied when selecting which registered objects
+--     (VIEWs and, when process_generated_tables = TRUE, generated TABLEs) to
+--     analyze. Matched objects STAY in the definition registry and keep change
+--     tracking; only lineage analysis is gated. The object NAME (object_name) and
+--     the DATASET (object_dataset) are filtered independently: the *_object_patterns
+--     act on the name and the *_dataset_patterns act on the dataset. REGEXP_CONTAINS
+--     = partial match; matching is case-insensitive (value and pattern are
+--     lowercased), so write patterns as raw strings in any case, e.g. r'^stg_'. An
+--     object is analyzed when it passes BOTH dimensions' include gate AND is
+--     excluded by NEITHER dimension: (name-include empty OR name matches) AND
+--     (dataset-include empty OR dataset matches) AND (name matches no name-exclude)
+--     AND (dataset matches no dataset-exclude). Non-matching objects stay in the
+--     registry but are not analyzed.
+--       include: empty array = no constraint on that dimension; otherwise analyze
+--                only matches (handy for scoping a run, e.g. object [r'^v_sales']
+--                or dataset [r'^mart_']).
+--       exclude: empty array = exclude nothing, e.g. object [r'^stg_', r'_tmp$'] or
+--                dataset [r'_staging$'].
 
 -- ----------------------------------------------------------------------------
 -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed

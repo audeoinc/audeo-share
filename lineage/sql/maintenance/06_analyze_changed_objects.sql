@@ -56,16 +56,22 @@ BEGIN
   -- --------------------------------------------------------------------------
   -- [A] REQUIRED per deployment / region -- set these
   -- --------------------------------------------------------------------------
-  -- GCP project. Repository, target, and UDFs share one project. The role-specific
-  -- *_project_id variables live in [C] and take this. Auto-detected from
-  -- INFORMATION_SCHEMA.SCHEMATA in [C] (the project the job runs in); to pin it,
-  -- set a literal there.
-  DECLARE default_project_id STRING;
-  -- Region (must equal @@location) and the repository / target / UDF datasets.
-  DECLARE job_region STRING DEFAULT 'asia-northeast1';
-  DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
-  DECLARE target_dataset STRING DEFAULT 'dataset';
-  DECLARE udf_dataset STRING DEFAULT 'dataset';
+  -- DECLAREs are grouped below, each with a brief inline note; full descriptions
+  -- follow the block under "Variable notes".
+  DECLARE default_project_id STRING;                              -- GCP project; auto-detected in [C]
+  DECLARE job_region STRING DEFAULT 'asia-northeast1';            -- must equal @@location
+  DECLARE repository_dataset STRING DEFAULT 'lineage_repository'; -- lnge_ tables dataset
+  DECLARE target_dataset STRING DEFAULT 'dataset';               -- dataset holding the analyzed objects
+  DECLARE udf_dataset STRING DEFAULT 'dataset';                  -- UDF dataset
+  --
+  -- Variable notes (keyed by name):
+  --   default_project_id
+  --     GCP project. Repository, target, and UDFs share one project. The role-
+  --     specific *_project_id variables live in [C] and take this. Auto-detected
+  --     from INFORMATION_SCHEMA.SCHEMATA in [C] (the project the job runs in); to
+  --     pin it, set a literal there.
+  --   job_region / repository_dataset / target_dataset / udf_dataset
+  --     Region (must equal @@location) and the repository / target / UDF datasets.
 
   -- --------------------------------------------------------------------------
   -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
