@@ -1800,10 +1800,19 @@ BEGIN
   -- COLUMN_FIELD_PATHS are the heaviest scan in the run. The COALESCE fallback
   -- creates an empty but correctly-typed table when nothing is referenced (e.g.
   -- changed objects with no physical sources).
+  --
+  -- Each UNION ALL branch projects an EXPLICIT column list, never SELECT *: the
+  -- INFORMATION_SCHEMA.COLUMNS / COLUMN_FIELD_PATHS views expose a varying number of
+  -- trailing columns across datasets/projects (collation, rounding_mode, policy
+  -- tags, ...), so SELECT * gives branches mismatched column counts and the UNION
+  -- fails. The listed columns are the stable core the resolver consumes.
   -- ------------------------------------------------------------------------
   SET columns_union_sql = (
     SELECT STRING_AGG(
-      FORMAT('SELECT * FROM `%s.%s.INFORMATION_SCHEMA.COLUMNS`', project_id, dataset_id),
+      FORMAT(
+        'SELECT table_catalog, table_schema, table_name, column_name, ordinal_position, data_type, is_nullable FROM `%s.%s.INFORMATION_SCHEMA.COLUMNS`',
+        project_id, dataset_id
+      ),
       ' UNION ALL '
     )
     FROM (
@@ -1819,7 +1828,7 @@ BEGIN
   SET columns_union_sql = COALESCE(
     columns_union_sql,
     (SELECT FORMAT(
-       'SELECT * FROM `%s.%s.INFORMATION_SCHEMA.COLUMNS` WHERE FALSE',
+       'SELECT table_catalog, table_schema, table_name, column_name, ordinal_position, data_type, is_nullable FROM `%s.%s.INFORMATION_SCHEMA.COLUMNS` WHERE FALSE',
        project_id, dataset_id
      )
      FROM source_datasets LIMIT 1)
@@ -1831,7 +1840,10 @@ BEGIN
 
   SET field_paths_union_sql = (
     SELECT STRING_AGG(
-      FORMAT('SELECT * FROM `%s.%s.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS`', project_id, dataset_id),
+      FORMAT(
+        'SELECT table_catalog, table_schema, table_name, column_name, field_path, data_type FROM `%s.%s.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS`',
+        project_id, dataset_id
+      ),
       ' UNION ALL '
     )
     FROM (
@@ -1847,7 +1859,7 @@ BEGIN
   SET field_paths_union_sql = COALESCE(
     field_paths_union_sql,
     (SELECT FORMAT(
-       'SELECT * FROM `%s.%s.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS` WHERE FALSE',
+       'SELECT table_catalog, table_schema, table_name, column_name, field_path, data_type FROM `%s.%s.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS` WHERE FALSE',
        project_id, dataset_id
      )
      FROM source_datasets LIMIT 1)

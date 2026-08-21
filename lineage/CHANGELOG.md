@@ -1,5 +1,18 @@
 # 1.5.0-032
 
+- Fixed a UNION ALL column-count mismatch when building `current_target_columns` /
+  `current_target_column_field_paths` in 03 STEP 3 ("Queries in UNION ALL have
+  mismatched column count. Query 1 has 22 columns, Query 10 has 29 columns"). Each
+  per-dataset branch used `SELECT * FROM <dataset>.INFORMATION_SCHEMA.COLUMNS`
+  (and COLUMN_FIELD_PATHS), but those views expose a varying number of trailing
+  columns across datasets/projects (collation, rounding_mode, policy tags, ...), so
+  the branches had different shapes and the UNION failed. Replaced `SELECT *` with an
+  explicit projection of the stable columns the resolver actually consumes
+  (COLUMNS: table_catalog, table_schema, table_name, column_name, ordinal_position,
+  data_type, is_nullable; COLUMN_FIELD_PATHS: table_catalog, table_schema,
+  table_name, column_name, field_path, data_type), in both the union branches and
+  the empty-table COALESCE fallbacks. SQL-only.
+
 - Fixed `{project_token}` not being substituted in the UDF library URI
   (`bootstrap_udf_library_uri` in 01 and 04): the URI was missing from the runtime
   REPLACE list, so a `{project_token}` placeholder in it reached the CREATE FUNCTION
