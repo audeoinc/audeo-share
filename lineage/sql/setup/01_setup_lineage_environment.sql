@@ -59,16 +59,16 @@ DECLARE bootstrap_table_name_suffix STRING DEFAULT '';
 -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
 -- ----------------------------------------------------------------------------
 -- UDF function names created in bootstrap_udf_dataset; keep them in step with 03.
-DECLARE bootstrap_udf_function_name STRING DEFAULT 'analyze_lineage_json';
+DECLARE bootstrap_udf_function_name STRING DEFAULT 'lnge_analyze_json';
 -- Companion scalar UDF that returns a SQL structural fingerprint. Used by
 -- 03_run_daily_lineage_pipeline.sql to collapse structurally-identical
 -- rotating-destination JOBS (temp / ephemeral). Shares the same GCS bundle.
 DECLARE bootstrap_udf_fingerprint_function_name STRING
-  DEFAULT 'fingerprint_lineage_sql';
+  DEFAULT 'lnge_fingerprint_sql';
 -- Companion scalar SQL UDF that expands the dynamic-SQL identifier placeholders.
 -- Used by 03_run_daily_lineage_pipeline.sql; created in the same UDF dataset.
 DECLARE bootstrap_udf_render_function_name STRING
-  DEFAULT 'render_dynamic_sql';
+  DEFAULT 'lnge_render_dynamic_sql';
 -- Target dataset(s) used only by the UDF smoke test below (to build a
 -- representative physical-column identity). The pipeline's own scan scope is set
 -- in 03_run_daily_lineage_pipeline.sql.
@@ -107,29 +107,29 @@ DECLARE fingerprint_smoke_result BOOL;
 -- Physical table names: prefix + marker + canonical base + suffix.
 -- The 'm_' / 't_' marker literal is inline; edit it to reclassify a table.
 SET table_definition_registry =
-  bootstrap_table_name_prefix || 'm_' || 'lineage_definition_registry'
+  bootstrap_table_name_prefix || 'lnge_' || 'm_' || 'definition_registry'
     || bootstrap_table_name_suffix;
 SET table_job_registry =
-  bootstrap_table_name_prefix || 'm_' || 'lineage_job_registry'
+  bootstrap_table_name_prefix || 'lnge_' || 'm_' || 'job_registry'
     || bootstrap_table_name_suffix;
 SET table_direct_dependency =
-  bootstrap_table_name_prefix || 't_' || 'lineage_direct_dependency'
+  bootstrap_table_name_prefix || 'lnge_' || 't_' || 'direct_dependency'
     || bootstrap_table_name_suffix;
 SET table_impact =
-  bootstrap_table_name_prefix || 't_' || 'lineage_impact'
+  bootstrap_table_name_prefix || 'lnge_' || 't_' || 'impact'
     || bootstrap_table_name_suffix;
 SET table_diagnostic =
-  bootstrap_table_name_prefix || 't_' || 'lineage_diagnostic'
+  bootstrap_table_name_prefix || 'lnge_' || 't_' || 'diagnostic'
     || bootstrap_table_name_suffix;
 SET table_column_usage =
-  bootstrap_table_name_prefix || 't_' || 'lineage_column_usage'
+  bootstrap_table_name_prefix || 'lnge_' || 't_' || 'column_usage'
     || bootstrap_table_name_suffix;
 -- View naming convention: prefix + 'vw_' + marker + canonical base + suffix, where
 -- the marker is 't_' / 'm_' (transaction / master) like the tables. This view is
--- built over the transaction tables t_lineage_column_usage / t_lineage_impact, so
--- its marker is 't_' -> vw_t_lineage_column_usage_impact.
+-- built over the transaction tables lnge_t_column_usage / lnge_t_impact, so
+-- its marker is 't_' -> lnge_vw_t_column_usage_impact.
 SET view_column_usage_impact =
-  bootstrap_table_name_prefix || 'vw_' || 't_' || 'lineage_column_usage_impact'
+  bootstrap_table_name_prefix || 'lnge_' || 'vw_' || 't_' || 'column_usage_impact'
     || bootstrap_table_name_suffix;
 
 ASSERT REGEXP_CONTAINS(table_definition_registry, r'^[A-Za-z0-9_-]+$')
@@ -257,7 +257,7 @@ EXECUTE IMMEDIATE FORMAT(
 -- from scratch, which is fine for a fresh setup but would drop data on an existing
 -- repository. To add the script_variables column in place without losing data, run
 -- once instead of re-running this CREATE:
---   ALTER TABLE `<project>.<dataset>.<m_lineage_definition_registry>`
+--   ALTER TABLE `<project>.<dataset>.<lnge_m_definition_registry>`
 --     ADD COLUMN IF NOT EXISTS script_variables ARRAY<STRING>;
 
 EXECUTE IMMEDIATE FORMAT(
@@ -468,7 +468,7 @@ EXECUTE IMMEDIATE FORMAT(
 -- (origin, usage-site) on read), never a stored rank on the usage table. Impact
 -- is fully replaced each 03 STEP 4 run, so the view always holds the current
 -- snapshot with no snapshot filter. Created here, after the tables it reads
--- (t_lineage_column_usage / t_lineage_impact).
+-- (lnge_t_column_usage / lnge_t_impact).
 EXECUTE IMMEDIATE FORMAT(
   '''
   CREATE OR REPLACE VIEW `%s.%s`
@@ -496,7 +496,7 @@ EXECUTE IMMEDIATE FORMAT(
     u.object_type         AS usage_object_type,
     u.generation_type     AS usage_generation_type,
     -- definition_hash of the object that CONTAINS the reference. Use it as the key
-    -- to pull that object's actual SQL (e.g. from m_lineage_definition_registry)
+    -- to pull that object's actual SQL (e.g. from lnge_m_definition_registry)
     -- when the metadata + line number are not enough to understand the usage.
     u.definition_hash     AS usage_definition_hash,
     u.usage_type,
@@ -551,15 +551,15 @@ EXECUTE IMMEDIATE FORMAT(
 -- ============================================================================
 -- 4b. Persistent dynamic-SQL renderer
 --
--- render_dynamic_sql expands the __TARGET_PROJECT__ / __JOB_REGION__ / __UDF__
+-- lnge_render_dynamic_sql expands the __TARGET_PROJECT__ / __JOB_REGION__ / __UDF__
 -- / __T_*__ identifier placeholders used by 03's dynamic SQL templates. It was
 -- formerly a script-level TEMP FUNCTION inside 03, but BigQuery prepends every
 -- script TEMP FUNCTION's DDL to the query text of every child job, so the
 -- console's "All results" list showed only "create temp function
--- render_dynamic_sql(" for each statement. Deploying it as a persistent function
+-- lnge_render_dynamic_sql(" for each statement. Deploying it as a persistent function
 -- here removes that prepend, so each statement (and the per-step progress
 -- markers) shows its own SQL. The function is created in the UDF dataset,
--- alongside analyze_lineage_json (bootstrap_udf_project_id /
+-- alongside lnge_analyze_json (bootstrap_udf_project_id /
 -- bootstrap_udf_dataset). 03 invokes it dynamically using its udf_project_id /
 -- udf_dataset DECLAREs, so keep this deployment location in step with those.
 -- ============================================================================

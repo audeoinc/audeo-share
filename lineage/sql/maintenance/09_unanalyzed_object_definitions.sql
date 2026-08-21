@@ -39,7 +39,7 @@
 -- reads INFORMATION_SCHEMA and the lineage registry; it writes nothing.
 --
 -- PERSISTED TWIN: 03_run_daily_lineage_pipeline.sql STEP 5 writes an equivalent
--- snapshot to the repository table `<prefix>t_lineage_unanalyzed_definition<suffix>`
+-- snapshot to the repository table `<prefix>lnge_t_unanalyzed_definition<suffix>`
 -- at the end of every run (built from the registry, so cheap). That table does NOT
 -- include registry-excluded objects (coverage_reason = NOT_REGISTERED), because
 -- they never enter the registry. This on-demand report DOES surface them, by
@@ -142,7 +142,7 @@ BEGIN
   -- The 'm_' marker literal is inline (mirrors 01 / 03). Every reference is
   -- backtick-quoted, so a hyphen in prefix/suffix is safe.
   SET registry_table =
-    table_name_prefix || 'm_' || 'lineage_definition_registry' || table_name_suffix;
+    table_name_prefix || 'lnge_' || 'm_' || 'definition_registry' || table_name_suffix;
   ASSERT REGEXP_CONTAINS(registry_table, r'^[A-Za-z0-9_-]+$')
   AS 'Invalid registry_table name.';
   SET registry_fqn = FORMAT(

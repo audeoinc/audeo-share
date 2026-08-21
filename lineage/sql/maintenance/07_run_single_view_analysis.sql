@@ -18,7 +18,7 @@
 -- ============================================================================
 SET @@location = 'asia-northeast1';
 
-CREATE TEMP FUNCTION render_dynamic_sql(
+CREATE TEMP FUNCTION lnge_render_dynamic_sql(
   sql_template STRING,
   target_project_id STRING,
   target_dataset STRING,
@@ -58,7 +58,7 @@ BEGIN
   -- --------------------------------------------------------------------------
   -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
   -- --------------------------------------------------------------------------
-  DECLARE udf_function_name STRING DEFAULT 'analyze_lineage_json';
+  DECLARE udf_function_name STRING DEFAULT 'lnge_analyze_json';
   DECLARE parser_strict_mode BOOL DEFAULT FALSE;
   DECLARE compact_export BOOL DEFAULT TRUE;
 
@@ -107,7 +107,7 @@ BEGIN
     WHERE LOWER(table_name) = LOWER(@target_view_name)
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = lnge_render_dynamic_sql(
     sql_template,
     target_project_id,
     target_dataset,
@@ -143,7 +143,7 @@ BEGIN
     FROM `__TARGET__.INFORMATION_SCHEMA.COLUMNS`
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = lnge_render_dynamic_sql(
     sql_template,
     target_project_id,
     target_dataset,
@@ -163,7 +163,7 @@ BEGIN
     FROM `__TARGET__.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS`
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = lnge_render_dynamic_sql(
     sql_template,
     target_project_id,
     target_dataset,
@@ -189,7 +189,7 @@ BEGIN
     )
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = lnge_render_dynamic_sql(
     sql_template,
     target_project_id,
     target_dataset,
@@ -340,7 +340,7 @@ BEGIN
     )
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = lnge_render_dynamic_sql(
     sql_template,
     target_project_id,
     target_dataset,

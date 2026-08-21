@@ -11,7 +11,7 @@ SET @@location = 'asia-northeast1';
 -- ============================================================================
 -- Common dynamic SQL renderer
 -- ============================================================================
--- render_dynamic_sql expands the __TARGET_PROJECT__ / __JOB_REGION__ / __UDF__
+-- lnge_render_dynamic_sql expands the __TARGET_PROJECT__ / __JOB_REGION__ / __UDF__
 -- / __T_*__ identifier placeholders below. It is a PERSISTENT function created
 -- by 01_setup_lineage_environment.sql (redeploy with
 -- sql/bigquery/create_render_dynamic_sql_udf.sql), NOT a script TEMP FUNCTION:
@@ -21,7 +21,7 @@ SET @@location = 'asia-northeast1';
 -- persistent function nothing is prepended, so each statement (and the per-step
 -- progress markers below) shows its own SQL.
 --
--- It lives alongside the JavaScript UDF (analyze_lineage_json) at
+-- It lives alongside the JavaScript UDF (lnge_analyze_json) at
 -- udf_project_id.udf_dataset. Because a static function reference cannot use a
 -- variable for its project/dataset, it is invoked through one reusable dynamic
 -- statement (render_call_sql, built once after the repo_tables block below) so
@@ -129,7 +129,7 @@ DECLARE dag_service_accounts ARRAY<STRING> DEFAULT [
 -- directly as a literal in each SET line; edit that literal only when a table
 -- must be reclassified. Include any '_' separators in the prefix and suffix.
 -- Example: prefix='ope_', marker 'm_', suffix='_tky' yields
--- ope_m_lineage_definition_registry_tky. Leave a segment empty to omit it.
+-- ope_lnge_m_definition_registry_tky. Leave a segment empty to omit it.
 -- Allowed characters: letters, digits, '_', and '-' (every reference to these
 -- tables is backtick-quoted, so a hyphen like suffix='-tky' is safe). Dataset and
 -- UDF names still allow only letters/digits/'_' (BigQuery does not permit '-').
@@ -181,16 +181,16 @@ DECLARE analysis_exclude_dataset_patterns ARRAY<STRING> DEFAULT [];
 -- ----------------------------------------------------------------------------
 -- UDF function names. These must match the names 01 setup created in udf_dataset;
 -- change them only if you deliberately renamed the functions there.
-DECLARE udf_function_name STRING DEFAULT 'analyze_lineage_json';
+DECLARE udf_function_name STRING DEFAULT 'lnge_analyze_json';
 -- Companion fingerprint UDF (registered by 01). Used to collapse
 -- structurally-identical rotating-destination JOBS (temp / ephemeral) to one
 -- representative.
-DECLARE udf_fingerprint_function_name STRING DEFAULT 'fingerprint_lineage_sql';
+DECLARE udf_fingerprint_function_name STRING DEFAULT 'lnge_fingerprint_sql';
 -- Companion dynamic-SQL renderer (registered by 01, same UDF dataset). Invoked
 -- dynamically (see render_call_sql) so its location stays DECLARE-configurable
 -- via udf_project_id / udf_dataset -- a static function reference cannot use a
 -- variable for its project/dataset.
-DECLARE udf_render_function_name STRING DEFAULT 'render_dynamic_sql';
+DECLARE udf_render_function_name STRING DEFAULT 'lnge_render_dynamic_sql';
 -- Parser strictness and the maximum impact rank retained by STEP 4.
 DECLARE parser_strict_mode BOOL DEFAULT FALSE;
 DECLARE configured_max_impact_rank INT64 DEFAULT 100;
@@ -251,18 +251,18 @@ DECLARE view_defs_union_sql STRING;
 -- assembled by the SET lines below from table_name_prefix / table_name_suffix
 -- ([A]). The 'm_' / 't_' marker literal is inline in each SET line; the names are
 -- injected into every repository DML via __T_*__ placeholders handled by
--- render_dynamic_sql().
+-- lnge_render_dynamic_sql().
 DECLARE table_definition_registry STRING;
 DECLARE table_direct_dependency STRING;
 DECLARE table_impact STRING;
 DECLARE table_diagnostic STRING;
 DECLARE table_job_registry STRING;
 -- STEP 5 snapshot: currently-existing objects not covered by analysis (report
--- table, full-refreshed at the end of each run). Not part of render_dynamic_sql's
+-- table, full-refreshed at the end of each run). Not part of lnge_render_dynamic_sql's
 -- fixed placeholder set; STEP 5 addresses it by a directly-built qualified name.
 DECLARE table_unanalyzed_definition STRING;
 -- Column usage index (per-reference, all clauses). Published by STEP 3 alongside
--- the direct dependencies. Also outside render_dynamic_sql's fixed placeholders,
+-- the direct dependencies. Also outside lnge_render_dynamic_sql's fixed placeholders,
 -- so it is addressed by a directly-built qualified name (column_usage_fqn below).
 DECLARE table_column_usage STRING;
 DECLARE column_usage_fqn STRING;
@@ -276,11 +276,11 @@ DECLARE repo_tables STRUCT<
 >;
 
 -- Dynamic SQL work variables.
--- Identifier replacement is centralized in render_dynamic_sql().
+-- Identifier replacement is centralized in lnge_render_dynamic_sql().
 DECLARE sql_template STRING;
 DECLARE rendered_sql STRING;
 
--- render_dynamic_sql (a PERSISTENT function co-located with the JavaScript UDF;
+-- lnge_render_dynamic_sql (a PERSISTENT function co-located with the JavaScript UDF;
 -- its name is udf_render_function_name, declared with the other UDF names above)
 -- is invoked through one reusable dynamic statement, render_call_sql, built once
 -- below -- a static function reference cannot use a variable for its
@@ -304,22 +304,22 @@ DECLARE source_dataset_count INT64;
 -- Physical table names: prefix + marker + canonical base + suffix.
 -- The 'm_' / 't_' marker literal is inline; edit it to reclassify a table.
 SET table_definition_registry =
-  table_name_prefix || 'm_' || 'lineage_definition_registry'
+  table_name_prefix || 'lnge_' || 'm_' || 'definition_registry'
     || table_name_suffix;
 SET table_job_registry =
-  table_name_prefix || 'm_' || 'lineage_job_registry' || table_name_suffix;
+  table_name_prefix || 'lnge_' || 'm_' || 'job_registry' || table_name_suffix;
 SET table_direct_dependency =
-  table_name_prefix || 't_' || 'lineage_direct_dependency'
+  table_name_prefix || 'lnge_' || 't_' || 'direct_dependency'
     || table_name_suffix;
 SET table_impact =
-  table_name_prefix || 't_' || 'lineage_impact' || table_name_suffix;
+  table_name_prefix || 'lnge_' || 't_' || 'impact' || table_name_suffix;
 SET table_diagnostic =
-  table_name_prefix || 't_' || 'lineage_diagnostic' || table_name_suffix;
+  table_name_prefix || 'lnge_' || 't_' || 'diagnostic' || table_name_suffix;
 SET table_unanalyzed_definition =
-  table_name_prefix || 't_' || 'lineage_unanalyzed_definition'
+  table_name_prefix || 'lnge_' || 't_' || 'unanalyzed_definition'
     || table_name_suffix;
 SET table_column_usage =
-  table_name_prefix || 't_' || 'lineage_column_usage' || table_name_suffix;
+  table_name_prefix || 'lnge_' || 't_' || 'column_usage' || table_name_suffix;
 
 ASSERT REGEXP_CONTAINS(table_definition_registry, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_definition_registry name.';
@@ -346,7 +346,7 @@ SET repo_tables = STRUCT(
 
 -- Build the persistent-renderer call once and reuse it for every template.
 -- The function location comes from udf_project_id / udf_dataset (same place as
--- analyze_lineage_json) via udf_render_function_name; only @sql_template varies
+-- lnge_analyze_json) via udf_render_function_name; only @sql_template varies
 -- per call, so the fixed configuration is baked in here. Every call site then
 -- runs: EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template.
 SET render_call_sql = FORMAT(
@@ -374,7 +374,7 @@ AS 'Invalid target_project_id.';
 ASSERT REGEXP_CONTAINS(job_region, r'^[A-Za-z0-9-]+$')
 AS 'Invalid job_region.';
 
--- Column usage index table qualified name (not a render_dynamic_sql placeholder).
+-- Column usage index table qualified name (not a lnge_render_dynamic_sql placeholder).
 -- Built once and reused by STEP 3's publish. CREATE TABLE IF NOT EXISTS keeps a
 -- deployment whose 01 setup predates this table self-healing (no-op once 01 has
 -- created it); the authoritative schema lives in 01 -- keep the two in step.
@@ -557,7 +557,7 @@ BEGIN
   --
   -- These identifiers come from source_project_filters (validated below) and
   -- from SCHEMATA (BigQuery dataset names are restricted to [A-Za-z0-9_]), so the
-  -- union SQL is assembled with FORMAT rather than render_dynamic_sql.
+  -- union SQL is assembled with FORMAT rather than lnge_render_dynamic_sql.
   -- Requirement: the executing account needs metadata read on every listed
   -- project, and all source datasets must be in job_region.
   -- --------------------------------------------------------------------------
@@ -1143,7 +1143,7 @@ BEGIN
   -- alike). The structural fingerprint (literals normalized) is what lets us
   -- collapse rotating-destination jobs whose SQL is identical. Computed once per
   -- job_id (guarded by sql_fingerprint IS NULL). Built inline rather than via
-  -- render_dynamic_sql because it needs the fingerprint UDF's qualified name.
+  -- lnge_render_dynamic_sql because it needs the fingerprint UDF's qualified name.
   SET rendered_sql = FORMAT(
     """
     UPDATE `%s`
@@ -1894,10 +1894,10 @@ BEGIN
     SELECT ds FROM UNNEST(changed_datasets) AS ds ORDER BY ds
   ) DO
 
-  -- Progress marker. BigQuery prepends the render_dynamic_sql TEMP FUNCTION DDL
+  -- Progress marker. BigQuery prepends the lnge_render_dynamic_sql TEMP FUNCTION DDL
   -- to the query text of every child job that calls it, so the console's "All
   -- results" list would otherwise show only "create temp function
-  -- render_dynamic_sql(" for each statement. This marker runs a dynamic SELECT
+  -- lnge_render_dynamic_sql(" for each statement. This marker runs a dynamic SELECT
   -- with the dataset name baked into the executed text (via FORMAT, not a bound
   -- variable), so each iteration surfaces which dataset STEP 3 is processing.
   EXECUTE IMMEDIATE FORMAT(
@@ -3753,7 +3753,7 @@ END IF;  -- has_analysis_work OR orphan_direct_dep_deleted > 0
 -- sql/maintenance/09_unanalyzed_object_definitions.sql surfaces those too
 -- (coverage_reason = NOT_REGISTERED), by re-scanning INFORMATION_SCHEMA.
 --
--- The table is not part of render_dynamic_sql's fixed __T_*__ placeholders; its
+-- The table is not part of lnge_render_dynamic_sql's fixed __T_*__ placeholders; its
 -- qualified name is built directly (backtick-quoted per the team rule). It is
 -- created here by CREATE OR REPLACE (no 01 dependency); the CLUSTER BY / OPTIONS
 -- keep it self-describing.

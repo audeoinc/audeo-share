@@ -25,7 +25,7 @@ BEGIN
 
   DECLARE udf_project_id STRING DEFAULT default_project_id;
   DECLARE udf_dataset STRING DEFAULT 'dataset';
-  DECLARE udf_function_name STRING DEFAULT 'analyze_lineage_json';
+  DECLARE udf_function_name STRING DEFAULT 'lnge_analyze_json';
 
   DECLARE parser_strict_mode BOOL DEFAULT FALSE;
   DECLARE target_object_name STRING DEFAULT 'v_customer_primary_contact';
@@ -151,7 +151,7 @@ BEGIN
       generation_type,
       definition_text,
       definition_hash
-    FROM `%s.%s.lineage_definition_registry`
+    FROM `%s.%s.lnge_m_definition_registry`
     WHERE is_active = TRUE
       AND LOWER(object_name) = LOWER(@target_object_name)
       AND LOWER(object_project) = LOWER(@target_project_id)
@@ -179,7 +179,7 @@ BEGIN
     target_dataset AS target_dataset;
 
   ASSERT definition_text IS NOT NULL
-  AS 'v_customer_primary_contact was not found in lineage_definition_registry.';
+  AS 'v_customer_primary_contact was not found in lnge_m_definition_registry.';
 
   -- --------------------------------------------------------------------------
   -- Execute the persistent JavaScript lineage UDF

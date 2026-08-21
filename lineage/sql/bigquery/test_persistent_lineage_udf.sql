@@ -11,7 +11,7 @@ SET @@location = 'asia-northeast1';
 BEGIN
   DECLARE udf_project_id STRING DEFAULT 'project_id';
   DECLARE udf_dataset STRING DEFAULT 'dataset';
-  DECLARE udf_function_name STRING DEFAULT 'analyze_lineage_json';
+  DECLARE udf_function_name STRING DEFAULT 'lnge_analyze_json';
 
   DECLARE udf_identifier STRING DEFAULT FORMAT(
     '%s.%s.%s',

@@ -13,7 +13,7 @@ SET @@location = 'asia-northeast1';
 -- ============================================================================
 -- Only SQL identifiers are replaced here.
 -- Runtime values continue to be passed with EXECUTE IMMEDIATE ... USING.
-CREATE TEMP FUNCTION render_dynamic_sql(
+CREATE TEMP FUNCTION lnge_render_dynamic_sql(
   sql_template STRING,
   repository_project_id STRING,
   repository_dataset STRING,
@@ -68,7 +68,7 @@ BEGIN
   -- --------------------------------------------------------------------------
   -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
   -- --------------------------------------------------------------------------
-  DECLARE udf_function_name STRING DEFAULT 'analyze_lineage_json';
+  DECLARE udf_function_name STRING DEFAULT 'lnge_analyze_json';
   DECLARE parser_strict_mode BOOL DEFAULT FALSE;
 
   -- --------------------------------------------------------------------------
@@ -117,7 +117,7 @@ BEGIN
     WHERE LOWER(table_schema) = LOWER(@target_dataset)
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = lnge_render_dynamic_sql(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -141,7 +141,7 @@ BEGIN
     FROM `__TARGET__.INFORMATION_SCHEMA.COLUMNS`
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = lnge_render_dynamic_sql(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -164,7 +164,7 @@ BEGIN
     FROM `__TARGET__.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS`
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = lnge_render_dynamic_sql(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -218,11 +218,11 @@ BEGIN
     -- Remove repository rows whose target definition is no longer active.
     -- --------------------------------------------------------------------------
     DELETE FROM
-      `lineage_direct_dependency` AS dependency
+      `lnge_t_direct_dependency` AS dependency
     WHERE NOT EXISTS (
       SELECT 1
       FROM
-        `lineage_definition_registry` AS registry
+        `lnge_m_definition_registry` AS registry
       WHERE registry.is_active = TRUE
         AND LOWER(registry.object_project) = LOWER(dependency.target_project)
         AND LOWER(registry.object_dataset) = LOWER(dependency.target_dataset)
@@ -232,11 +232,11 @@ BEGIN
     );
 
     DELETE FROM
-      `lineage_diagnostic` AS diagnostic
+      `lnge_t_diagnostic` AS diagnostic
     WHERE NOT EXISTS (
       SELECT 1
       FROM
-        `lineage_definition_registry` AS registry
+        `lnge_m_definition_registry` AS registry
       WHERE registry.is_active = TRUE
         AND LOWER(registry.object_project) = LOWER(diagnostic.object_project)
         AND LOWER(registry.object_dataset) = LOWER(diagnostic.object_dataset)
@@ -257,7 +257,7 @@ BEGIN
         definition_text,
         definition_hash
       FROM
-        `lineage_definition_registry`
+        `lnge_m_definition_registry`
       WHERE is_active = TRUE
         AND is_changed = TRUE
         AND definition_text IS NOT NULL
@@ -290,7 +290,7 @@ BEGIN
             )
           """;
 
-          SET rendered_sql = render_dynamic_sql(
+          SET rendered_sql = lnge_render_dynamic_sql(
             sql_template,
             repository_project_id,
             repository_dataset,
@@ -443,7 +443,7 @@ BEGIN
           )
         """;
 
-        SET rendered_sql = render_dynamic_sql(
+        SET rendered_sql = lnge_render_dynamic_sql(
           sql_template,
           repository_project_id,
           repository_dataset,
@@ -609,7 +609,7 @@ BEGIN
             parsed.target_object_type
           FROM parsed_edges AS parsed
           LEFT JOIN
-            `lineage_definition_registry`
+            `lnge_m_definition_registry`
               AS source_registry
             ON source_registry.is_active = TRUE
            AND LOWER(source_registry.object_project) = parsed.source_project
@@ -673,7 +673,7 @@ BEGIN
         CREATE OR REPLACE TEMP TABLE previous_direct_dependency AS
         SELECT *
         FROM
-          `lineage_direct_dependency`
+          `lnge_t_direct_dependency`
         WHERE LOWER(target_project) = LOWER(target.object_project)
           AND LOWER(target_dataset) = LOWER(target.object_dataset)
           AND LOWER(target_object) = LOWER(target.object_name)
@@ -683,7 +683,7 @@ BEGIN
         CREATE OR REPLACE TEMP TABLE previous_lineage_diagnostic AS
         SELECT *
         FROM
-          `lineage_diagnostic`
+          `lnge_t_diagnostic`
         WHERE LOWER(object_project) = LOWER(target.object_project)
           AND LOWER(object_dataset) = LOWER(target.object_dataset)
           AND LOWER(object_name) = LOWER(target.object_name)
@@ -692,7 +692,7 @@ BEGIN
         SET replacement_started = TRUE;
 
         DELETE FROM
-          `lineage_direct_dependency`
+          `lnge_t_direct_dependency`
         WHERE LOWER(target_project) = LOWER(target.object_project)
           AND LOWER(target_dataset) = LOWER(target.object_dataset)
           AND LOWER(target_object) = LOWER(target.object_name)
@@ -700,24 +700,24 @@ BEGIN
           AND generation_type = target.generation_type;
 
         INSERT INTO
-          `lineage_direct_dependency`
+          `lnge_t_direct_dependency`
         SELECT *
         FROM staged_direct_dependency;
 
         DELETE FROM
-          `lineage_diagnostic`
+          `lnge_t_diagnostic`
         WHERE LOWER(object_project) = LOWER(target.object_project)
           AND LOWER(object_dataset) = LOWER(target.object_dataset)
           AND LOWER(object_name) = LOWER(target.object_name)
           AND object_type = target.object_type;
 
         INSERT INTO
-          `lineage_diagnostic`
+          `lnge_t_diagnostic`
         SELECT *
         FROM staged_lineage_diagnostic;
 
         UPDATE
-          `lineage_definition_registry`
+          `lnge_m_definition_registry`
         SET
           is_changed = FALSE,
           analysis_status = udf_analysis_status,
@@ -738,19 +738,19 @@ BEGIN
           -- Replace only the diagnostics so the actual parser/resolver reason is
           -- available in lineage_diagnostic for troubleshooting.
           DELETE FROM
-            `lineage_diagnostic`
+            `lnge_t_diagnostic`
           WHERE LOWER(object_project) = LOWER(target.object_project)
             AND LOWER(object_dataset) = LOWER(target.object_dataset)
             AND LOWER(object_name) = LOWER(target.object_name)
             AND object_type = target.object_type;
 
           INSERT INTO
-            `lineage_diagnostic`
+            `lnge_t_diagnostic`
           SELECT *
           FROM staged_lineage_diagnostic;
 
           INSERT INTO
-            `lineage_diagnostic`
+            `lnge_t_diagnostic`
           (
             definition_hash,
             object_project,
@@ -792,7 +792,7 @@ BEGIN
           );
 
           UPDATE
-            `lineage_definition_registry`
+            `lnge_m_definition_registry`
           SET
             is_changed = TRUE,
             analysis_status = 'FAILED',
@@ -874,7 +874,7 @@ BEGIN
         EXCEPTION WHEN ERROR THEN
           IF replacement_started THEN
           DELETE FROM
-            `lineage_direct_dependency`
+            `lnge_t_direct_dependency`
           WHERE LOWER(target_project) = LOWER(target.object_project)
             AND LOWER(target_dataset) = LOWER(target.object_dataset)
             AND LOWER(target_object) = LOWER(target.object_name)
@@ -882,25 +882,25 @@ BEGIN
             AND generation_type = target.generation_type;
 
           INSERT INTO
-            `lineage_direct_dependency`
+            `lnge_t_direct_dependency`
           SELECT *
           FROM previous_direct_dependency;
 
           DELETE FROM
-            `lineage_diagnostic`
+            `lnge_t_diagnostic`
           WHERE LOWER(object_project) = LOWER(target.object_project)
             AND LOWER(object_dataset) = LOWER(target.object_dataset)
             AND LOWER(object_name) = LOWER(target.object_name)
             AND object_type = target.object_type;
 
           INSERT INTO
-            `lineage_diagnostic`
+            `lnge_t_diagnostic`
           SELECT *
           FROM previous_lineage_diagnostic;
         END IF;
 
         UPDATE
-          `lineage_definition_registry`
+          `lnge_m_definition_registry`
         SET
           is_changed = TRUE,
           analysis_status = 'FAILED',
@@ -913,7 +913,7 @@ BEGIN
           AND definition_hash = target.definition_hash;
 
         INSERT INTO
-          `lineage_diagnostic`
+          `lnge_t_diagnostic`
         (
           definition_hash,
           object_project,
@@ -991,19 +991,19 @@ BEGIN
       (
         SELECT COUNT(*)
         FROM
-          `lineage_definition_registry`
+          `lnge_m_definition_registry`
         WHERE is_active = TRUE
           AND is_changed = TRUE
       ) AS remaining_changed_object_count,
       (
         SELECT COUNT(*)
         FROM
-          `lineage_direct_dependency`
+          `lnge_t_direct_dependency`
       ) AS direct_dependency_count,
       (
         SELECT COUNT(*)
         FROM
-          `lineage_diagnostic`
+          `lnge_t_diagnostic`
         WHERE severity = 'ERROR'
       ) AS error_diagnostic_count;
   END;

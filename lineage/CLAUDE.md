@@ -81,8 +81,17 @@ npm test                        # build + verify:bundle + test:release を一括
     `CREATE ... TABLE \`%s.%s\`` はすべて backtick で囲む（ハイフン入り project や予約語 dataset/table でも
     安全）。現状の全 SQL は準拠済み。新規・変更時も修飾テーブル/ビュー/INFORMATION_SCHEMA 参照は
     裸で書かないこと（セッション一時テーブルの単一名と列参照は対象外）。
-- **03 パイプラインの構造**：`render_dynamic_sql`（8 プレースホルダ / 9 パラメータ）で
-  テンプレート置換 → `EXECUTE IMMEDIATE`。この関数は **01 setup が UDF Dataset（`analyze_lineage_json`
+  - **オブジェクト命名規則（システム識別子 `lnge_`）**：このシステムが作成・利用する
+    テーブル/ビュー/UDF は必ず `lnge_` prefix を付ける。組み立ては
+    `<可変prefix> + 'lnge_' + marker + base + <可変suffix>`。marker はテーブル
+    `m_`（master）/`t_`（transaction）、ビュー `vw_` + `t_`/`m_`。base に "lineage" は
+    入れない（prefix に集約済み）。例：`lnge_m_definition_registry` /
+    `lnge_t_impact` / `lnge_t_column_usage` / `lnge_vw_t_column_usage_impact`。
+    UDF は `lnge_analyze_json` / `lnge_fingerprint_sql` / `lnge_render_dynamic_sql`。
+    データセット名（`lineage_repository` 等）・GCS バンドル・ファイル名・JS API 名は
+    対象外。新規オブジェクトも同規則に従う。
+- **03 パイプラインの構造**：`lnge_render_dynamic_sql`（8 プレースホルダ / 9 パラメータ）で
+  テンプレート置換 → `EXECUTE IMMEDIATE`。この関数は **01 setup が UDF Dataset（`lnge_analyze_json`
   と同じ場所 = `udf_project_id.udf_dataset`）に作る永続関数**（旧: スクリプト内 TEMP FUNCTION。
   BigQuery が全子ジョブの SQL 冒頭に TEMP FUNCTION DDL を前置し「All results」が全部同表示に
   なるため永続化）。静的呼び出しは関数名に変数を使えないため、03 は `udf_project_id` /
@@ -117,7 +126,7 @@ npm test                        # build + verify:bundle + test:release を一括
   列参照は `EXTERNAL_SOURCE_RESOLVED`（定数同様の終端・系統も診断もなし）で解決。
   実テーブルとの JOIN では実列優先・誤 AMBIGUOUS なし。
   **未解析オブジェクトのスナップショット（STEP 5）**：03 末尾で毎回
-  `CREATE OR REPLACE TABLE <prefix>t_lineage_unanalyzed_definition<suffix>` を実行。
+  `CREATE OR REPLACE TABLE <prefix>lnge_t_unanalyzed_definition<suffix>` を実行。
   レジストリ（STEP 1-2 で同期済み）から「実在（is_active・非 ephemeral）だが
   解析カバー外＝COMPLETED かつ last_analyzed_hash=definition_hash ではない」行を
   `coverage_reason` 付きで定義単位 DISTINCT に書き出す（INFORMATION_SCHEMA 再スキャン
@@ -125,7 +134,7 @@ npm test                        # build + verify:bundle + test:release を一括
   組み立て（バッククォート）。STEP 5 の CREATE OR REPLACE 自体が作成するので 01 不要。
   registry-exclude で未登録の object は含まれない（オンデマンドの 09 が
   `NOT_REGISTERED` として拾う）。
-  **カラム利用箇所インデックス（t_lineage_column_usage）**：カラム要件変更の影響
+  **カラム利用箇所インデックス（lnge_t_column_usage）**：カラム要件変更の影響
   確認用（Looker で table/view＋カラムを選ぶと「どの object のどの行でどう使われて
   いるか」を表示）。impact は値フロー（SELECT）系統だが、こちらは全句
   （SELECT/WHERE/JOIN_ON/JOIN_UNNEST/FROM_UNNEST/GROUP_BY/HAVING/QUALIFY/ORDER_BY）の
@@ -137,18 +146,18 @@ npm test                        # build + verify:bundle + test:release を一括
   render の固定枠外なので直接組み立て（`column_usage_fqn`）、既存デプロイ向けに 03 が
   `CREATE TABLE IF NOT EXISTS` で自己修復（正本スキーマは 01）。下流列の「大元と経由」は
   既存 impact（`origin/impacted`＋`dependency_path`）で辿れるため新規実装なし。
-  **利用箇所×深さ（vw_t_lineage_column_usage_impact）**：利用箇所の「深さ(rank)」は
+  **利用箇所×深さ（lnge_vw_t_column_usage_impact）**：利用箇所の「深さ(rank)」は
   原点カラム基準の相対値（同じ利用箇所でも原点次第で深さが変わる）ため、usage 表に
-  単一 rank を持たせず、ビュー `vw_t_lineage_column_usage_impact` でクエリ時結合。直接参照＝深さ1、
+  単一 rank を持たせず、ビュー `lnge_vw_t_column_usage_impact` でクエリ時結合。直接参照＝深さ1、
   impact 経由＝`impact_rank+1`、`dependency_path` で経由も表示。各行に
   `usage_definition_hash`（参照を含む object の `definition_hash`）を露出し、メタ＋行番号
-  で足りない時に実SQL（`m_lineage_definition_registry` 等）を引く join key に使える。
+  で足りない時に実SQL（`lnge_m_definition_registry` 等）を引く join key に使える。
   impact は STEP 4 で
   毎回全置換のため常に最新スナップショット（フィルタ不要）。**ビューは 01 setup が
-  テーブル作成直後に併せて作成**（`t_lineage_column_usage`／`t_lineage_impact` の後）。
+  テーブル作成直後に併せて作成**（`lnge_t_column_usage`／`lnge_t_impact` の後）。
   既存デプロイでビューだけ追加/更新したい場合は 01 の該当 `CREATE OR REPLACE VIEW`
   ブロックを単独実行すればよい（データを持たないので無害）。
-  **診断の generation_type**：`t_lineage_diagnostic` に `generation_type`（nullable）を
+  **診断の generation_type**：`lnge_t_diagnostic` に `generation_type`（nullable）を
   追加。View 定義か Job SQL かを registry と join せず判別可（'VIEW_DEFINITION'＝View、
   'SCHEDULED_QUERY'/'DAG' 等＝生成テーブル Job）。値は元々診断ステージングを流れており
   永続化しただけ。書込みは 03 STEP 3 の3系統（UDF診断・非publishableマーカー・

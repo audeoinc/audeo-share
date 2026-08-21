@@ -4,7 +4,7 @@
 
 The pipeline does not aggregate every target dataset's `COLUMNS` and
 `COLUMN_FIELD_PATHS` rows into one JSON value. For each SQL definition it first
-calls `analyze_lineage_json` with `{"source_discovery_only": true}`. The UDF
+calls `lnge_analyze_json` with `{"source_discovery_only": true}`. The UDF
 parses the SQL and returns only directly referenced physical Table/View names.
 
 The SQL script then selects metadata for those names and makes the normal UDF

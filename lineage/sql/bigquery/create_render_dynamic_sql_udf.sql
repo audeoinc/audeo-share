@@ -2,14 +2,14 @@
 -- create_render_dynamic_sql_udf.sql
 -- Persistent dynamic-SQL renderer redeployment helper
 -- ============================================================================
--- render_dynamic_sql expands the __TARGET_PROJECT__ / __JOB_REGION__ / __UDF__
+-- lnge_render_dynamic_sql expands the __TARGET_PROJECT__ / __JOB_REGION__ / __UDF__
 -- / __T_*__ identifier placeholders used by 03_run_daily_lineage_pipeline.sql.
 -- It is deployed by 01_setup_lineage_environment.sql during initial setup; run
 -- this helper only to recreate it in place (e.g. after editing the body)
 -- without re-running full setup. The function is a pure SQL scalar UDF and does
 -- not depend on the JavaScript bundle.
 --
--- It is created in the UDF dataset, alongside analyze_lineage_json. 03 invokes
+-- It is created in the UDF dataset, alongside lnge_analyze_json. 03 invokes
 -- it dynamically using its udf_project_id / udf_dataset DECLAREs, so keep the
 -- values below in step with the UDF location.
 -- ============================================================================
@@ -18,7 +18,7 @@ SET @@location = 'asia-northeast1';
 BEGIN
   DECLARE udf_project_id STRING DEFAULT 'project_id';
   DECLARE udf_dataset STRING DEFAULT 'dataset';
-  DECLARE udf_render_function_name STRING DEFAULT 'render_dynamic_sql';
+  DECLARE udf_render_function_name STRING DEFAULT 'lnge_render_dynamic_sql';
 
   ASSERT REGEXP_CONTAINS(udf_project_id, r'^[A-Za-z0-9._:-]+$')
   AS 'Invalid udf_project_id.';

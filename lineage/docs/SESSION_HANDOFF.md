@@ -34,7 +34,7 @@ Claude Code セッション（会話の記憶を持たない）へ引き継ぐ�
   判定は「**宛先が実在し、かつ table expiration が無い**もののみ永続」。それ以外
   （非実在 or expiration 付き）は ephemeral として合成ラベル
   `<target_project>.<ephemeral_object_dataset_label>.fp_<hash>` に集約。
-- 実装：`fingerprint_lineage_sql` UDF（01）と `fingerprintSqlForBigQuery`（エンジン）。
+- 実装：`lnge_fingerprint_sql` UDF（01）と `fingerprintSqlForBigQuery`（エンジン）。
   文字列/数値リテラルを `?` に置換し構造だけを比較（リテラル差のみの SQL は同一指紋）。
 
 ## 3. フィルタ/リージョンまわりの整理
@@ -62,7 +62,7 @@ Claude Code セッション（会話の記憶を持たない）へ引き継ぐ�
   name-include かつ dataset-include を満たし、name-exclude・dataset-exclude の
   いずれにも当たらない object を解析）。マッチは既存同様
   `REGEXP_CONTAINS(LOWER(値), LOWER(pattern))`（大文字小文字無視）。
-- 冗長変数の整理：`render_dynamic_sql` の未使用プレースホルダ `__REPOSITORY__` /
+- 冗長変数の整理：`lnge_render_dynamic_sql` の未使用プレースホルダ `__REPOSITORY__` /
   `__TARGET__` と、それだけのために存在した `target_dataset` スカラーを撤去
   （現在は 8 プレースホルダ / 9 パラメータ）。
 

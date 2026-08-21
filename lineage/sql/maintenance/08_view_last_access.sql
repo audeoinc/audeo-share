@@ -95,7 +95,7 @@ BEGIN
     '%s.%s.%s',
     repository_project_id,
     repository_dataset,
-    table_name_prefix || 'm_' || 'lineage_definition_registry' || table_name_suffix
+    table_name_prefix || 'lnge_' || 'm_' || 'definition_registry' || table_name_suffix
   );
 
   SET rendered_sql = FORMAT(

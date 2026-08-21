@@ -29,7 +29,7 @@ DECLARE bootstrap_udf_library_uri STRING DEFAULT
 -- ----------------------------------------------------------------------------
 -- [B] BEHAVIOR OPTIONS -- keep aligned with 01 / 03; defaults are safe
 -- ----------------------------------------------------------------------------
-DECLARE bootstrap_udf_function_name STRING DEFAULT 'analyze_lineage_json';
+DECLARE bootstrap_udf_function_name STRING DEFAULT 'lnge_analyze_json';
 DECLARE bootstrap_target_datasets ARRAY<STRING> DEFAULT ['dataset'];
 DECLARE bootstrap_parser_strict_mode BOOL DEFAULT FALSE;
 DECLARE bootstrap_compact_export BOOL DEFAULT TRUE;
@@ -140,11 +140,11 @@ SELECT
 -- ============================================================================
 BEGIN
   DECLARE required_tables ARRAY<STRING> DEFAULT [
-    'lineage_definition_registry',
-    'lineage_direct_dependency',
-    'lineage_impact',
-    'lineage_diagnostic',
-    'lineage_job_registry'
+    'lnge_m_definition_registry',
+    'lnge_t_direct_dependency',
+    'lnge_t_impact',
+    'lnge_t_diagnostic',
+    'lnge_m_job_registry'
   ];
 
   FOR required_table IN (
@@ -436,7 +436,7 @@ BEGIN
         is_active = TRUE
         AND analysis_status = 'FAILED'
       )
-    FROM `%s.lineage_definition_registry`
+    FROM `%s.lnge_m_definition_registry`
     ''',
     repository_dataset_full_name
   )
@@ -482,7 +482,7 @@ BEGIN
     IF(failed_count = 0, 'PASS', 'FAIL'),
     '0',
     CAST(failed_count AS STRING),
-    'Inspect lineage_diagnostic for failed objects.',
+    'Inspect lnge_t_diagnostic for failed objects.',
     CURRENT_TIMESTAMP()
   );
 END;
@@ -502,7 +502,7 @@ BEGIN
       COUNT(*),
       COUNTIF(target_dataset = @sample_dataset),
       COUNTIF(edge_key IS NULL OR edge_key = '')
-    FROM `%s.lineage_direct_dependency`
+    FROM `%s.lnge_t_direct_dependency`
     ''',
     repository_dataset_full_name
   )
@@ -517,7 +517,7 @@ BEGIN
     SELECT COUNT(*)
     FROM (
       SELECT edge_key
-      FROM `%s.lineage_direct_dependency`
+      FROM `%s.lnge_t_direct_dependency`
       GROUP BY edge_key
       HAVING COUNT(*) > 1
     )
@@ -616,7 +616,7 @@ BEGIN
     )
     SELECT COUNT(*)
     FROM expected_edges AS expected
-    JOIN `%s.lineage_direct_dependency` AS actual
+    JOIN `%s.lnge_t_direct_dependency` AS actual
       ON actual.source_dataset = @sample_dataset
      AND actual.target_dataset = @sample_dataset
      AND actual.source_object = expected.source_object
@@ -657,7 +657,7 @@ BEGIN
       COUNT(*),
       COALESCE(MAX(impact_rank), 0),
       COUNTIF(is_cycle)
-    FROM `%s.lineage_impact`
+    FROM `%s.lnge_t_impact`
     ''',
     repository_dataset_full_name
   )
@@ -669,7 +669,7 @@ BEGIN
   EXECUTE IMMEDIATE FORMAT(
     '''
     SELECT COUNT(*)
-    FROM `%s.lineage_impact`
+    FROM `%s.lnge_t_impact`
     WHERE origin_dataset = @sample_dataset
       AND origin_object IN (
         'customers',
@@ -693,7 +693,7 @@ BEGIN
     IF(impact_count > 0, 'PASS', 'FAIL'),
     'greater than 0',
     CAST(impact_count AS STRING),
-    'The daily pipeline must rebuild lineage_impact.',
+    'The daily pipeline must rebuild lnge_t_impact.',
     CURRENT_TIMESTAMP()
   );
 
@@ -759,7 +759,7 @@ BEGIN
     SELECT
       COUNTIF(severity = 'ERROR'),
       COUNTIF(severity = 'WARNING')
-    FROM `%s.lineage_diagnostic`
+    FROM `%s.lnge_t_diagnostic`
     ''',
     repository_dataset_full_name
   )

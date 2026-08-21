@@ -1,5 +1,29 @@
 # 1.5.0-032
 
+- Applied a system-identity `lnge_` prefix to every table, view, and UDF this
+  system creates/uses, and removed the now-redundant inline "lineage" from the
+  canonical base names. Names assemble as `<prefix> + 'lnge_' + marker + base +
+  <suffix>` (marker `m_`/`t_` for tables, `vw_` + `t_`/`m_` for views). Mapping:
+  `m_lineage_definition_registry`→`lnge_m_definition_registry`,
+  `m_lineage_job_registry`→`lnge_m_job_registry`,
+  `t_lineage_direct_dependency`→`lnge_t_direct_dependency`,
+  `t_lineage_impact`→`lnge_t_impact`, `t_lineage_diagnostic`→`lnge_t_diagnostic`,
+  `t_lineage_column_usage`→`lnge_t_column_usage`,
+  `t_lineage_unanalyzed_definition`→`lnge_t_unanalyzed_definition`,
+  `vw_t_lineage_column_usage_impact`→`lnge_vw_t_column_usage_impact`; UDFs
+  `analyze_lineage_json`→`lnge_analyze_json`,
+  `fingerprint_lineage_sql`→`lnge_fingerprint_sql`,
+  `render_dynamic_sql`→`lnge_render_dynamic_sql`. Applied across 01/03/04/06/07/08/09
+  and the bigquery/ + debug/ scripts; the `04` validation `required_tables` list and
+  the `04`/`06`/debug backtick table references (which used stale no-marker names)
+  were corrected to the new names too. The dataset `lineage_repository`, the GCS
+  bundle `lineage_udf_bundle.js`, file names, and the JS API names
+  (`analyzeLineageForBigQuery` etc.) are intentionally unchanged. UDF renames only
+  change the SQL function name (the JS library binding is unaffected), so the
+  engine bundle is unchanged. Existing deployments need a rename migration (create
+  the new objects, or `ALTER TABLE ... RENAME TO`, and recreate the UDFs/view). Not
+  yet validated against BigQuery.
+
 - Closed a timing window that made an object transiently FAIL when a source table
   it references is dropped mid-run. The publishability classifier
   (`batch_object_source_flags`) judged source existence against
