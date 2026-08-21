@@ -127,6 +127,19 @@ npm test                        # build + verify:bundle + test:release を一括
   それを `DEFAULT` する（`@@location` と同じ単一ソース方式）。03 の
   `source_project_filters`（物理ソースは複数 project 可）と 08 の
   `audit_project_id`（監査 sink は別 project 可）は上書き前提で残す。
+  **対象フィルタは2系統に統合（レジストリ＝解析対象）**：以前の
+  `target_dataset_*`（走査範囲）／`registry_exclude_*`（収集除外）／
+  `analysis_*`（解析ゲート）を、`analysis_include/exclude_dataset_patterns`
+  （dataset スコープ＝View 走査範囲＋生成テーブルの dataset ゲート）と
+  `analysis_include/exclude_object_patterns`（object 名フィルタ、収集時に適用）の
+  2系統だけに整理。両フィルタは **収集段（STEP1 View／STEP2 生成テーブル）で適用**し、
+  通ったものだけがレジストリに載る＝そのまま解析対象。除外された object は登録も
+  変更追跡もされず、設定変更で新たに除外された既存 object は orphan cleanup が
+  deactivate。よって解析段（changed_datasets probe・per-dataset materialization）
+  ではフィルタ再適用は無く、`process_generated_tables`（生成テーブルを解析するかの
+  トグル）と per-dataset スコープのみ。source 側の `source_project_filters` は別軸
+  （参照される物理テーブルの schema 取得範囲）で不変。09 の dataset スコープも
+  `analysis_*_dataset` に改名して 03 と統一。
   さらに DECLARE 群は `[A] 必須設定（デプロイ/リージョンごと）`→
   `[B] 動作オプション`→`[C] 派生/内部（編集不可）`の3段に整理（03/01/04/06/07/08
   すべて）。新リージョン立ち上げ時に触るのは冒頭の `SET @@location` と `[A]` だけ。
@@ -161,8 +174,8 @@ npm test                        # build + verify:bundle + test:release を一括
   `coverage_reason` 付きで定義単位 DISTINCT に書き出す（INFORMATION_SCHEMA 再スキャン
   なし・毎回全更新で積み上がらない）。名前は render の固定 `__T_*__` 枠外なので直接
   組み立て（バッククォート）。STEP 5 の CREATE OR REPLACE 自体が作成するので 01 不要。
-  registry-exclude で未登録の object は含まれない（オンデマンドの 09 が
-  `NOT_REGISTERED` として拾う）。
+  収集フィルタ（analysis dataset scope＋object filter）で未収集の object は含まれない
+  （オンデマンドの 09 が `NOT_REGISTERED` として拾う）。
   **カラム利用箇所インデックス（lnge_t_column_usage）**：カラム要件変更の影響
   確認用（Looker で table/view＋カラムを選ぶと「どの object のどの行でどう使われて
   いるか」を表示）。impact は値フロー（SELECT）系統だが、こちらは全句
@@ -207,7 +220,7 @@ npm test                        # build + verify:bundle + test:release を一括
   大オブジェクトが偏ると OOM が続いた。実運用で「1データセットずつなら通る」ことを確認済みのため、
   STEP 3 の 変更検知→探索→解析→direct-dependency publish を
   `FOR ds_row IN (SELECT ds FROM UNNEST(target_datasets) ...) DO ... END FOR` で囲い、
-  各反復で `analysis_include_dataset_patterns=['^ds$']` に絞る。探索・解析とも単一クエリに復帰
+  各反復で `LOWER(object_dataset)=LOWER(@current_dataset)` に絞る。探索・解析とも単一クエリに復帰
   （`*_udf_chunk_*`・`udf_chunk`・2つの `WHILE` を削除）。ループ外に残すもの＝target_datasets 解決／
   グローバルメタデータ（STEP 1 で全 target dataset 分ロード、跨ぎ参照を保持）／orphan cleanup／
   STEP 4 Impact 再構築（データセット跨ぎのため最後に1回）。カウンタは反復加算、run summary はループ後1回。

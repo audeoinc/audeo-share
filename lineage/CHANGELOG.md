@@ -1,5 +1,30 @@
 # 1.5.0-032
 
+- Consolidated 03's target-side object filters from three overlapping groups into
+  two, on the principle that the registry holds exactly the analysis targets (no
+  "collect but do not analyze" stage). Removed `target_dataset_include/exclude_
+  patterns` and `registry_exclude_object/dataset_patterns`; kept the `analysis_*`
+  set with widened meaning: `analysis_include/exclude_dataset_patterns` is now the
+  dataset scope (resolves which target datasets are scanned for Views AND bounds the
+  generated-table jobs), and `analysis_include/exclude_object_patterns` is the
+  object-name filter applied at collection (STEP 1 for Views, STEP 2 for generated
+  TABLEs). Both filters now run at collection, so only matching objects enter the
+  registry and are analyzed; excluded objects are neither registered nor change-
+  tracked (an object newly excluded by a config change is deactivated by orphan
+  cleanup). The analysis-time re-application (changed_datasets probe and per-dataset
+  materialization) was dropped -- the probe keeps only the `process_generated_tables`
+  toggle, and the per-dataset loop scopes via `LOWER(object_dataset) =
+  LOWER(@current_dataset)`. `source_project_filters` is unchanged (it is a separate
+  axis: the schema-read scope of the referenced physical/base tables, the widest
+  scope). 09's report scope was renamed `target_dataset_*` -> `analysis_*_dataset`
+  to match 03. Consequence: the STEP 5 / 09 "REGISTERED_NOT_YET_ANALYZED" category
+  is effectively gone (only a momentary timing gap). Also moved the `udf_name_prefix`
+  / `udf_name_suffix` DECLAREs from `[B]` to `[A]` (deployment naming knobs, like the
+  table prefix/suffix), and reordered `[A]` to: project-token, datasets, table
+  naming, UDF naming, source scope, analysis dataset scope, analysis object filter,
+  service accounts. SQL-only; the engine bundle is unchanged. Not yet validated
+  against BigQuery.
+
 - Reorganized each script's `[A]` (required per-deployment) config section into a
   consistent "grouped DECLAREs + variable notes" layout (01/03/04/06/07/08/09).
   Previously `[A]` interleaved a multi-line description comment before each DECLARE;

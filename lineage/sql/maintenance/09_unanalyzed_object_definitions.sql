@@ -78,9 +78,9 @@ BEGIN
   DECLARE table_name_suffix STRING DEFAULT '';
   -- Project-token substitution
   DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
-  -- Target dataset scope
-  DECLARE target_dataset_include_patterns ARRAY<STRING> DEFAULT [];
-  DECLARE target_dataset_exclude_patterns ARRAY<STRING> DEFAULT [];
+  -- Analysis dataset scope
+  DECLARE analysis_include_dataset_patterns ARRAY<STRING> DEFAULT [];
+  DECLARE analysis_exclude_dataset_patterns ARRAY<STRING> DEFAULT [];
   --
   -- Variable notes (keyed by name):
   --   repository_dataset / table_name_prefix / table_name_suffix
@@ -92,8 +92,8 @@ BEGIN
   --     from the auto-detected project id replaces every '{project_token}'
   --     placeholder in the dataset name and table prefix/suffix. Default: first
   --     hyphen segment.
-  --   target_dataset_include_patterns / target_dataset_exclude_patterns
-  --     Target dataset scope (same meaning as 03). Empty include = every dataset in
+  --   analysis_include_dataset_patterns / analysis_exclude_dataset_patterns
+  --     Analysis dataset scope (same meaning as 03). Empty include = every dataset in
   --     the target project / region; exclude drops matches. Matching is
   --     case-insensitive (name and pattern are lowercased). Confines BOTH the VIEWS
   --     union and the generated-table jobs to these datasets.
@@ -214,12 +214,12 @@ BEGIN
   )
   INTO target_datasets
   USING
-    target_dataset_include_patterns AS inc,
-    target_dataset_exclude_patterns AS exc;
+    analysis_include_dataset_patterns AS inc,
+    analysis_exclude_dataset_patterns AS exc;
 
   SET target_datasets = COALESCE(target_datasets, CAST([] AS ARRAY<STRING>));
   ASSERT ARRAY_LENGTH(target_datasets) > 0
-  AS 'No target dataset matched target_dataset_include_patterns / exclude in the region.';
+  AS 'No target dataset matched analysis_include_dataset_patterns / exclude in the region.';
   ASSERT (
     SELECT LOGICAL_AND(REGEXP_CONTAINS(d, r'^[A-Za-z0-9_]+$'))
     FROM UNNEST(target_datasets) AS d
