@@ -1,5 +1,25 @@
 # 1.5.0-032
 
+- Fixed untyped STRUCT field aliases `STRUCT(expr AS name, ...)` throwing
+  "ExpressionParser: expected \")\", but found \"AS\"" in non-recoverable positions
+  (engine). The function-call argument loop never consumed a struct field's
+  `AS <name>`, so `STRUCT(a AS x)` only parsed inside a SELECT list (where per-item
+  recovery hides it) and failed anywhere a parse error is structural -- FROM's
+  `UNNEST(...)`, WHERE, etc. DAG SQL such as
+  `CROSS JOIN UNNEST(IF(ARRAY_LENGTH(x) > 0, x, [STRUCT(CAST(NULL AS STRING) AS id, CAST(NULL AS TIMESTAMP) AS start_dtime)]))`
+  failed in 03's source-discovery pass (which runs with strict/throw defaults, not
+  the analysis pass's non-strict recovery). Now, for STRUCT calls only, an optional
+  `AS <name>` after each argument is consumed and discarded (a field label carries no
+  lineage; the value expression's lineage is unchanged). Scoped to STRUCT so other
+  functions still surface real syntax errors. Test: test_v1_5_0_072.
+
+- Made ExpressionParser syntax errors locatable: `#expect` now appends
+  `at line L column C (token_seq N) near: <surrounding tokens>` to its message, so a
+  parse failure recorded by 03 as a diagnostic can be pinpointed in the (often huge,
+  single-line) generated SQL without source offsets. Diagnostic text only; parsing is
+  unchanged. Test: test_v1_5_0_071. Bundle rebuilt (sha256 ad18b4b..., 461888 bytes);
+  test:release 52 / golden 48 PASS.
+
 - Allowed a parenthesized FROM subquery to begin with `WITH` or a set operation,
   not only `SELECT` (engine). `FromParser.#parseSubquerySource` required the first
   inner token to be `SELECT` and threw "parenthesized FROM source must begin with
