@@ -31,6 +31,20 @@ class BigQueryExporter {
     const tables = engineResult.tables ?? {};
     const analysisRow = this.#createAnalysisRow(engineResult);
 
+    /*
+     * 参照の位置情報(行番号・行テキスト)を付与するための索引。物理カラム参照の
+     * export で start_token_seq からトークンの line_no/column_no を引き、原SQLの
+     * 該当1行を取り出す(利用箇所レポート t_lineage_column_usage 用)。tokens /
+     * sql_text は engineResult 直下にある。
+     */
+    this.tokenBySeq = new Map(
+      (Array.isArray(engineResult.tokens) ? engineResult.tokens : [])
+        .map((token) => [token.token_seq, token])
+    );
+    this.sqlLines = typeof engineResult.sql_text === "string"
+      ? engineResult.sql_text.split(/\r?\n/)
+      : [];
+
     return {
       analyses: [analysisRow],
       tokens: this.runtimeCompact
@@ -57,6 +71,7 @@ class BigQueryExporter {
         tables.physical_column_references,
         this.#exportPhysicalColumnReference.bind(this)
       ),
+      column_usages: this.#buildColumnUsages(tables.physical_column_references),
       wildcard_expansions: this.#mapRows(
         tables.wildcard_expansions,
         this.#exportWildcardExpansion.bind(this)
@@ -117,6 +132,40 @@ class BigQueryExporter {
     }
 
     return JSON.stringify(value);
+  }
+
+  /**
+   * 参照の start_token_seq から、行番号・桁番号・原SQLの該当1行を返す。
+   * トークンや sql_text が無い場合(未初期化・パース前)は null を返す。line_no は
+   * 1始まり(sqlLines は 0始まり配列)。参照が複数行にまたがっても、要件どおり
+   * 「参照トークンのある1行」だけを返す(式全体は reference_name / fragment で別途保持)。
+   */
+  #referenceLocation(startTokenSeq) {
+    const emptyLocation = {
+      line_number: null,
+      column_number: null,
+      line_text: null
+    };
+
+    if (startTokenSeq === null || startTokenSeq === undefined) {
+      return emptyLocation;
+    }
+
+    const token = this.tokenBySeq ? this.tokenBySeq.get(startTokenSeq) : null;
+
+    if (!token || token.line_no === null || token.line_no === undefined) {
+      return emptyLocation;
+    }
+
+    const lineText = Array.isArray(this.sqlLines)
+      ? (this.sqlLines[token.line_no - 1] ?? null)
+      : null;
+
+    return {
+      line_number: token.line_no,
+      column_number: token.column_no ?? null,
+      line_text: lineText
+    };
   }
 
   #createAnalysisRow(engineResult) {
@@ -243,6 +292,59 @@ class BigQueryExporter {
       expression_json: this.runtimeCompact ? null : this.#toJson(row.expression),
       output_column_json: this.runtimeCompact ? null : this.#toJson(row)
     });
+  }
+
+  /**
+   * 利用箇所インデックス(t_lineage_column_usage 用)を、物理カラム参照から平坦化して
+   * 作る。全句(SELECT/WHERE/JOIN/GROUP BY/HAVING/QUALIFY/ORDER BY)を対象とし、物理列に
+   * 解決できた参照だけを残す(派生/未解決は除外)。1参照が複数物理列に解決した場合は
+   * 物理列ごとに1行。各行は解決済み source 物理列・使われ方(usage_type=clause)・
+   * 行番号/桁番号/該当1行(line_text)を平坦なフィールドで持つ(03 が JSON_VALUE で直読み
+   * できるよう、physical_columns_json のような入れ子 JSON にしない)。
+   */
+  #buildColumnUsages(physicalColumnReferences) {
+    if (!Array.isArray(physicalColumnReferences)) {
+      return [];
+    }
+
+    const usages = [];
+
+    for (const reference of physicalColumnReferences) {
+      const physicalColumns = Array.isArray(reference.physical_columns)
+        ? reference.physical_columns
+        : [];
+
+      if (physicalColumns.length === 0) {
+        continue;
+      }
+
+      const location = this.#referenceLocation(reference.start_token_seq ?? null);
+
+      for (const physicalColumn of physicalColumns) {
+        if (!physicalColumn || !physicalColumn.physical_table_name) {
+          continue;
+        }
+
+        usages.push(this.#withMetadata({
+          usage_type: reference.clause_type ?? null,
+          reference_name: reference.reference_name ?? null,
+          column_name: reference.column_name ?? null,
+          physical_resolution_status:
+            reference.physical_resolution_status ?? null,
+          physical_table_name: physicalColumn.physical_table_name ?? null,
+          physical_column_name: physicalColumn.physical_column_name ?? null,
+          field_path: physicalColumn.field_path ?? null,
+          scope_id: reference.scope_id ?? null,
+          start_token_seq: reference.start_token_seq ?? null,
+          end_token_seq: reference.end_token_seq ?? null,
+          line_number: location.line_number,
+          column_number: location.column_number,
+          line_text: location.line_text
+        }));
+      }
+    }
+
+    return usages;
   }
 
   #exportPhysicalColumnReference(row) {

@@ -1,5 +1,780 @@
 # 1.5.0-032
 
+- Fixed untyped STRUCT field aliases `STRUCT(expr AS name, ...)` throwing
+  "ExpressionParser: expected \")\", but found \"AS\"" in non-recoverable positions
+  (engine). The function-call argument loop never consumed a struct field's
+  `AS <name>`, so `STRUCT(a AS x)` only parsed inside a SELECT list (where per-item
+  recovery hides it) and failed anywhere a parse error is structural -- FROM's
+  `UNNEST(...)`, WHERE, etc. DAG SQL such as
+  `CROSS JOIN UNNEST(IF(ARRAY_LENGTH(x) > 0, x, [STRUCT(CAST(NULL AS STRING) AS id, CAST(NULL AS TIMESTAMP) AS start_dtime)]))`
+  failed in 03's source-discovery pass (which runs with strict/throw defaults, not
+  the analysis pass's non-strict recovery). Now, for STRUCT calls only, an optional
+  `AS <name>` after each argument is consumed and discarded (a field label carries no
+  lineage; the value expression's lineage is unchanged). Scoped to STRUCT so other
+  functions still surface real syntax errors. Test: test_v1_5_0_072.
+
+- Made ExpressionParser syntax errors locatable: `#expect` now appends
+  `at line L column C (token_seq N) near: <surrounding tokens>` to its message, so a
+  parse failure recorded by 03 as a diagnostic can be pinpointed in the (often huge,
+  single-line) generated SQL without source offsets. Diagnostic text only; parsing is
+  unchanged. Test: test_v1_5_0_071. Bundle rebuilt (sha256 ad18b4b..., 461888 bytes);
+  test:release 52 / golden 48 PASS.
+
+- Allowed a parenthesized FROM subquery to begin with `WITH` or a set operation,
+  not only `SELECT` (engine). `FromParser.#parseSubquerySource` required the first
+  inner token to be `SELECT` and threw "parenthesized FROM source must begin with
+  SELECT", even though it delegates parsing to `QueryParser`, which already handles
+  CTEs and UNION/INTERSECT/EXCEPT. DAG-generated SQL of the form
+  `FROM (WITH xxx AS (...) SELECT ... INTERSECT DISTINCT (WITH zzz AS (...) SELECT ...))`
+  failed to parse. Relaxed the guard to accept `SELECT`, `WITH`, or `(` (a
+  parenthesized set-operation branch) as the query start; both branches now resolve
+  to their physical columns with no diagnostics. Test: test_v1_5_0_070. Bundle
+  rebuilt (sha256 c4c5863..., 460181 bytes); test:release 48 / golden 48 PASS.
+
+- Fixed a UNION ALL column-count mismatch when building `current_target_columns` /
+  `current_target_column_field_paths` in 03 STEP 3 ("Queries in UNION ALL have
+  mismatched column count. Query 1 has 22 columns, Query 10 has 29 columns"). Each
+  per-dataset branch used `SELECT * FROM <dataset>.INFORMATION_SCHEMA.COLUMNS`
+  (and COLUMN_FIELD_PATHS), but those views expose a varying number of trailing
+  columns across datasets/projects (collation, rounding_mode, policy tags, ...), so
+  the branches had different shapes and the UNION failed. Replaced `SELECT *` with an
+  explicit projection of the stable columns the resolver actually consumes
+  (COLUMNS: table_catalog, table_schema, table_name, column_name, ordinal_position,
+  data_type, is_nullable; COLUMN_FIELD_PATHS: table_catalog, table_schema,
+  table_name, column_name, field_path, data_type), in both the union branches and
+  the empty-table COALESCE fallbacks. SQL-only.
+
+- Fixed `{project_token}` not being substituted in the UDF library URI
+  (`bootstrap_udf_library_uri` in 01 and 04): the URI was missing from the runtime
+  REPLACE list, so a `{project_token}` placeholder in it reached the CREATE FUNCTION
+  / validation as a literal and failed. Added the URI to the REPLACE block in both
+  scripts.
+
+- Added early guards (task A) so an unsubstituted `{project_token}` (or any invalid
+  character) surfaces at setup time instead of as a confusing failure at DDL/query
+  time. After the REPLACE block, each script now ASSERTs that its dataset-name
+  inputs (repository / udf / target / audit, as applicable, plus each
+  bootstrap_target_datasets entry) match `^[A-Za-z0-9_]+$` -- which also catches a
+  leftover `{project_token}` since braces are invalid -- and 01/04 additionally
+  ASSERT the GCS library URI no longer contains `{project_token}` (a URI is not an
+  identifier, so it is checked for the placeholder only). Prefix/suffix inputs were
+  already covered by the assembled table/UDF-name ASSERTs. SQL-only.
+
+- 01 setup summary (step 7) now also reports `project_id` (the auto-detected
+  project) and `project_token` (the substring extracted by
+  `bootstrap_project_token_pattern`) as its first two columns, so a run can be
+  verified at a glance: the `{project_token}` placeholder in dataset / prefix /
+  suffix inputs is substituted at runtime (in [C], before names are assembled), so
+  the summary's `repository_dataset` etc. show the resolved names, and the new
+  columns show the token that produced them. Display-only.
+
+- Aligned the `[A]` group order across all scripts to match 03: project-token
+  substitution first, then datasets, then table naming, then UDF naming, then the
+  file-specific groups. For consistency with the "[A] = set per deployment"
+  principle, moved `project_token_pattern` and `udf_name_prefix` / `udf_name_suffix`
+  from `[B]` into `[A]` in 04/06/07 (they were already in `[A]` in 01; 08/09 have no
+  UDF naming). Each variable is still declared exactly once and before the first
+  statement; the `[C]` assembly/REPLACE references are unchanged. Comment/order only;
+  behavior unchanged. SQL-only.
+
+- Consolidated 03's target-side object filters from three overlapping groups into
+  two, on the principle that the registry holds exactly the analysis targets (no
+  "collect but do not analyze" stage). Removed `target_dataset_include/exclude_
+  patterns` and `registry_exclude_object/dataset_patterns`; kept the `analysis_*`
+  set with widened meaning: `analysis_include/exclude_dataset_patterns` is now the
+  dataset scope (resolves which target datasets are scanned for Views AND bounds the
+  generated-table jobs), and `analysis_include/exclude_object_patterns` is the
+  object-name filter applied at collection (STEP 1 for Views, STEP 2 for generated
+  TABLEs). Both filters now run at collection, so only matching objects enter the
+  registry and are analyzed; excluded objects are neither registered nor change-
+  tracked (an object newly excluded by a config change is deactivated by orphan
+  cleanup). The analysis-time re-application (changed_datasets probe and per-dataset
+  materialization) was dropped -- the probe keeps only the `process_generated_tables`
+  toggle, and the per-dataset loop scopes via `LOWER(object_dataset) =
+  LOWER(@current_dataset)`. `source_project_filters` is unchanged (it is a separate
+  axis: the schema-read scope of the referenced physical/base tables, the widest
+  scope). 09's report scope was renamed `target_dataset_*` -> `analysis_*_dataset`
+  to match 03. Consequence: the STEP 5 / 09 "REGISTERED_NOT_YET_ANALYZED" category
+  is effectively gone (only a momentary timing gap). Also moved the `udf_name_prefix`
+  / `udf_name_suffix` DECLAREs from `[B]` to `[A]` (deployment naming knobs, like the
+  table prefix/suffix), and reordered `[A]` to: project-token, datasets, table
+  naming, UDF naming, source scope, analysis dataset scope, analysis object filter,
+  service accounts. SQL-only; the engine bundle is unchanged. Not yet validated
+  against BigQuery.
+
+- Reorganized each script's `[A]` (required per-deployment) config section into a
+  consistent "grouped DECLAREs + variable notes" layout (01/03/04/06/07/08/09).
+  Previously `[A]` interleaved a multi-line description comment before each DECLARE;
+  now the DECLAREs sit in one contiguous block, split into purpose groups each
+  introduced by a single one-line header comment (e.g. `-- Datasets (repository /
+  UDF)`, `-- Table naming (prefix / suffix)`), so the settable variables are
+  visible at a glance. There are no per-line inline comments; the full descriptions
+  follow the block under a `Variable notes:` header keyed by variable name.
+  Comment/whitespace reorganization only -- every variable is still declared
+  exactly once, all DECLAREs still precede the first statement, and no defaults
+  changed, so behavior is unchanged. SQL-only; the engine bundle is unchanged.
+  Follow-up: moved the `default_project_id` (01/04: `bootstrap_default_project_id`)
+  DECLARE out of `[A]` and into `[B]`, since it is auto-detected at runtime (in
+  `[C]`) rather than set per deployment; `[A]` keeps only a one-line pointer comment
+  to it, and its full description moved to `[B]` alongside the DECLARE. Still
+  declared once and before the first statement, so behavior is unchanged.
+
+- Added a project-token substitution so a piece of the (auto-detected) project id
+  can be embedded in object names. Each script (01/03/04/06/07/08/09) declares a
+  configurable `project_token_pattern` regex; right after the project is
+  auto-detected, `project_token = COALESCE(REGEXP_EXTRACT(<project_id>, pattern),
+  '')` (capture group 1 if present) is computed and every literal `{project_token}`
+  placeholder in the name inputs -- dataset names, and the table / view / UDF
+  prefixes & suffixes -- is `REPLACE`d with it, before the names are assembled and
+  asserted. E.g. project id `mycompany-prod-123` with `r'-([^-]+)-'` yields `prod`,
+  so `table_name_prefix = '{project_token}_'` becomes `prod_`. The default pattern
+  takes the first hyphen-delimited segment. Because `{project_token}` uses braces
+  (not valid in identifiers), any placeholder left unreplaced (empty token or a
+  config typo) is caught by the existing name ASSERTs. Keep each script's pattern
+  in step with 01. SQL-only; the engine bundle is unchanged. Not yet validated
+  against BigQuery.
+
+- Made UDF (routine) names prefix/suffix-configurable, mirroring the tables. New
+  dedicated `*_udf_name_prefix` / `*_udf_name_suffix` variables (default '') in 01
+  (creates), 03 (daily), and 04/06/07 (which call the analysis UDF) assemble the
+  UDF names as `udf_prefix + 'lnge_' + base + udf_suffix`
+  (`analyze_json` / `fingerprint_sql` / `render_dynamic_sql`). Kept separate from
+  the table prefix/suffix because routine names allow only letters/digits/'_' (no
+  '-', unlike backtick-quoted tables); a hyphen is caught by the existing
+  `^[A-Za-z0-9_]+$` name ASSERT. The prefix/suffix must be kept in step between 01
+  and the callers so the pipeline finds the functions.
+
+- Auto-detect the GCP project instead of hardcoding the `project_id` placeholder.
+  In every script (01/03/04/06/07/08/09) `default_project_id` (01/04:
+  `bootstrap_default_project_id`) is now resolved at runtime from
+  ``EXECUTE IMMEDIATE FORMAT("SELECT DISTINCT catalog_name FROM `region-%s`.INFORMATION_SCHEMA.SCHEMATA LIMIT 1", @@location) INTO ...`` (catalog_name = the
+  project the job runs in), with an ASSERT that it resolved. The role-specific
+  `*_project_id` variables changed from `DEFAULT default_project_id` to
+  `DEFAULT NULL` and are set via `COALESCE(role, default_project_id)` in a SET
+  block right after the DECLAREs, preserving the "pin one role by setting a
+  literal" behavior (a literal wins over the auto-detected default). To pin the
+  whole project, replace the auto-detect SET with a literal. 04 also moved its
+  `repository_dataset_full_name` assembly into that SET block (it previously
+  DECLARE-DEFAULTed from the project, which is NULL until auto-detect runs). The
+  debug script is intentionally left with the manual placeholder. SQL-only; the
+  engine bundle is unchanged. Not yet validated against BigQuery.
+
+- Applied a system-identity `lnge_` prefix to every table, view, and UDF this
+  system creates/uses, and removed the now-redundant inline "lineage" from the
+  canonical base names. Names assemble as `<prefix> + 'lnge_' + marker + base +
+  <suffix>` (marker `m_`/`t_` for tables, `vw_` + `t_`/`m_` for views). Mapping:
+  `m_lineage_definition_registry`→`lnge_m_definition_registry`,
+  `m_lineage_job_registry`→`lnge_m_job_registry`,
+  `t_lineage_direct_dependency`→`lnge_t_direct_dependency`,
+  `t_lineage_impact`→`lnge_t_impact`, `t_lineage_diagnostic`→`lnge_t_diagnostic`,
+  `t_lineage_column_usage`→`lnge_t_column_usage`,
+  `t_lineage_unanalyzed_definition`→`lnge_t_unanalyzed_definition`,
+  `vw_t_lineage_column_usage_impact`→`lnge_vw_t_column_usage_impact`; UDFs
+  `analyze_lineage_json`→`lnge_analyze_json`,
+  `fingerprint_lineage_sql`→`lnge_fingerprint_sql`,
+  `render_dynamic_sql`→`lnge_render_dynamic_sql`. Applied across 01/03/04/06/07/08/09
+  and the bigquery/ + debug/ scripts; the `04` validation `required_tables` list and
+  the `04`/`06`/debug backtick table references (which used stale no-marker names)
+  were corrected to the new names too. The dataset `lineage_repository`, the GCS
+  bundle `lineage_udf_bundle.js`, file names, and the JS API names
+  (`analyzeLineageForBigQuery` etc.) are intentionally unchanged. UDF renames only
+  change the SQL function name (the JS library binding is unaffected), so the
+  engine bundle is unchanged. Existing deployments need a rename migration (create
+  the new objects, or `ALTER TABLE ... RENAME TO`, and recreate the UDFs/view). Not
+  yet validated against BigQuery.
+
+- Closed a timing window that made an object transiently FAIL when a source table
+  it references is dropped mid-run. The publishability classifier
+  (`batch_object_source_flags`) judged source existence against
+  `current_target_tables`, a snapshot taken in STEP 1, while column metadata is
+  collected in STEP 3. A table dropped between the two scans still appeared in the
+  STEP 1 snapshot, so it looked "present but with no columns" (a coverage gap ->
+  object non-publishable -> FAILED, and its absent-source "metadata not found"
+  WARNING was written to lineage_diagnostic), even though the table no longer
+  existed; the next run self-healed once it was gone from the snapshot too. STEP 3
+  now builds `current_referenced_tables`, a fresh `INFORMATION_SCHEMA.TABLES` scan
+  taken alongside the column metadata and over the same referenced source
+  datasets, and the classifier's existence check reads it instead of the STEP 1
+  snapshot. A table that no longer exists when its columns are scanned is now
+  correctly treated as absent (publishable, warning suppressed); genuine coverage
+  gaps (table present at scan time, columns empty) are still flagged. Existence and
+  columns are now read at effectively the same moment, shrinking the window to the
+  seconds between the STEP 3 TABLES and COLUMNS scans. SQL-only; the engine bundle
+  is unchanged. Not yet validated against BigQuery.
+
+- Added a `generation_type` column to the diagnostic table (`t_lineage_diagnostic`)
+  so a reader can tell whether a diagnostic's SQL is a View definition or a
+  generated-table job SQL, without joining the registry. `object_type` only says
+  VIEW vs TABLE; `generation_type` is 'VIEW_DEFINITION' for a View (its SQL is
+  INFORMATION_SCHEMA.VIEWS.view_definition) or the job execution source
+  ('SCHEDULED_QUERY' / 'DAG' / ...) for a generated table (its SQL is the
+  INFORMATION_SCHEMA.JOBS query). The value was already carried through the
+  pipeline's diagnostic staging (used as a join key) and is simply now persisted.
+  01 setup adds the (nullable) column; 03 STEP 3 writes it in all three diagnostic
+  sources (UDF diagnostics, the non-publishable marker, and pre-analysis failures);
+  06's single-object maintenance path writes it too. Nullable so no diagnostic
+  write path can fail on it. SQL-only; the engine bundle is unchanged. Not yet
+  validated against BigQuery.
+
+- Added the `vw_t_lineage_column_usage_impact` view (created by 01 setup, right after
+  the `t_lineage_column_usage` / `t_lineage_impact` tables it reads) that joins the
+  column usage index to the impact graph, so a Looker report can pick an ORIGIN
+  column and see every downstream usage site with a DEPTH like impact_rank, plus
+  the value-flow path. Depth is relative to a chosen origin (the same usage site
+  sits at different depths for different origins), so it is computed per (origin,
+  usage-site) on read rather than stored as an ambiguous single rank on the usage
+  table. The view is the UNION of: direct references of the origin column
+  (depth = 1) from `t_lineage_column_usage`; and, joining `t_lineage_impact`
+  (impacted column = usage source column), references of columns the origin impacts
+  (depth = impact_rank + 1), carrying `dependency_path` for the route. Each row
+  also exposes `usage_definition_hash` -- the `definition_hash` of the object that
+  contains the reference -- as a join key to pull that object's actual SQL (e.g.
+  from `m_lineage_definition_registry`) when the metadata and line number are not
+  enough to understand a usage. Impact is
+  fully replaced each STEP 4 run, so the view always reflects the current snapshot
+  with no snapshot filter. To (re)create just the view on an existing deployment
+  (or after a table-name change), run 01's `CREATE OR REPLACE VIEW` block on its
+  own -- it holds no data, so it is safe to replace anytime. SQL-only; the engine
+  bundle is unchanged. Not yet validated against BigQuery.
+
+- Added a per-reference column usage index (`t_lineage_column_usage`) for
+  requirement-change impact review: "select a table/view + column → where and how
+  is it used". Unlike the impact table (value-flow / SELECT lineage), this captures
+  references in ALL clauses (SELECT / WHERE / JOIN_ON / JOIN_UNNEST / FROM_UNNEST /
+  GROUP_BY / HAVING / QUALIFY / ORDER_BY), one row per resolved physical-column
+  reference, with `usage_type` (the clause), `reference_name`, the resolved source
+  physical column (`source_project/dataset/object/object_type/column/field_path`,
+  VIEW/TABLE classified as for the dependency edges), the referencing object, and
+  `line_number` / `column_number` / `line_text` (the single source line holding the
+  reference token). Engine: the exporter now emits a flattened `column_usages`
+  table, built from `physical_column_references` (which already carry `clause_type`
+  + resolved physical columns) with line info derived from the token's `line_no`
+  and the original SQL; derived / unresolved references are excluded. Bundle
+  rebuilt (`sha256 37aec3cd…`, 459728 bytes). SQL: 01 creates the table; 03 STEP 3
+  stages `batch_staged_column_usage` from the UDF `column_usages` for COMPLETED
+  objects and publishes it with the same delete-by-object + insert, backup /
+  rollback, and deactivated-object orphan-cleanup machinery as the direct
+  dependencies. The table is not one of render_dynamic_sql's fixed `__T_*__`
+  placeholders, so it is addressed by a directly-built qualified name
+  (`column_usage_fqn`); 03 also `CREATE TABLE IF NOT EXISTS` it once for
+  deployments whose 01 predates it (authoritative schema stays in 01). The
+  companion ask — trace a downstream SELECTed column back to its origin and the
+  path it takes — is already answered by the existing impact table
+  (`origin`/`impacted` + `dependency_path`), so no new work there. Test:
+  `test_v1_5_0_069`. Not yet validated against BigQuery.
+
+- Persisted the 09 report as a repository table refreshed at the end of the daily
+  pipeline. `03_run_daily_lineage_pipeline.sql` gains STEP 5, which runs
+  unconditionally after STEP 4 and does one `CREATE OR REPLACE TABLE
+  <prefix>t_lineage_unanalyzed_definition<suffix>` — the currently-existing
+  (is_active, non-ephemeral) definition-registry objects that are NOT fully
+  covered by analysis (NOT `COMPLETED` / `COMPLETED_WITH_WARNINGS` with
+  `last_analyzed_hash` = `definition_hash`), each tagged with a `coverage_reason`
+  (`REGISTERED_NOT_YET_ANALYZED` / `ANALYSIS_<status>` /
+  `DEFINITION_CHANGED_NOT_REANALYZED`) and deduped by `definition_hash`, plus a
+  `refreshed_at`. It is built straight from the registry (whose `definition_text` /
+  `definition_hash` / `analysis_status` are already synchronized by STEP 1-2), so
+  it adds no INFORMATION_SCHEMA re-scan and never piles up across runs (full
+  refresh). The table's qualified name is assembled directly (backtick-quoted; it
+  is not one of render_dynamic_sql's fixed `__T_*__` placeholders), a new
+  `table_unanalyzed_definition` name variable is declared in [C] alongside the
+  other repository table names, and the table is created by the STEP 5 statement
+  itself (no 01 dependency; CLUSTER BY / OPTIONS keep it self-describing).
+  Difference vs the on-demand 09: registry-excluded objects (`NOT_REGISTERED`) are
+  not in the registry and so are absent from this table; 09 still surfaces them by
+  re-scanning INFORMATION_SCHEMA. SQL-only; the engine bundle is unchanged. Not yet
+  validated against BigQuery.
+
+- Parsed a FROM-position table-valued function call (e.g. `EXTERNAL_QUERY`) as an
+  opaque source instead of failing. A job SQL of the form
+  `FROM EXTERNAL_QUERY('conn', '''SELECT ...''') AS a` produced "Source discovery
+  did not complete" / FromParser "JOIN was expected but found `(`": the FROM
+  source grammar only knew ordinary tables, UNNEST, and subqueries, so it read
+  `EXTERNAL_QUERY` as a table name and then hit the `(` in the JOIN loop. The
+  parser now recognizes a name (optionally dotted, `dataset.my_tvf(...)`) directly
+  followed by `(` as a table-function call: it skips the balanced parentheses
+  without analyzing their contents, takes an optional alias (the `AS a` may be
+  absent), and emits a new `TABLE_FUNCTION` source. Federated / TVF output is not a
+  BigQuery physical table and its columns have no physical lineage, so the resolver
+  treats a `TABLE_FUNCTION` column as a resolved external terminal
+  (`EXTERNAL_SOURCE_RESOLVED`): a qualified `a.col`, a single-source unqualified
+  reference, and — as a last resort only, so a real table in the same join always
+  wins and no false AMBIGUOUS arises — an unqualified reference with no other
+  match, all resolve to it with no lineage edge and no diagnostic (unlike
+  `DERIVED_SOURCE_RESOLVED`, which would flag it PARTIALLY_RESOLVED for having no
+  traceable upstream). A real table joined with `EXTERNAL_QUERY` still produces its
+  own lineage normally. Engine change: rebuilt the bundle
+  (`sha256 ff87a852…`, 455709 bytes). Test: `test_v1_5_0_068`. Not yet validated
+  against BigQuery.
+
+- Added `sql/maintenance/09_unanalyzed_object_definitions.sql`, a read-only,
+  on-demand report that lists the SQL of objects that CURRENTLY EXIST but are not
+  covered by lineage analysis, so an operator can see what is missing from the
+  graph and why. It surfaces two kinds of objects: (1) Views, from
+  `target_project.dataset.INFORMATION_SCHEMA.VIEWS` (view_definition), unioned
+  across every target dataset; and (2) generated TABLEs from
+  `region-<job_region>.INFORMATION_SCHEMA.JOBS_BY_PROJECT` whose destination table
+  STILL EXISTS now (confirmed against region `INFORMATION_SCHEMA.TABLES`, so a job
+  whose destination has since been dropped — a definition that no longer exists —
+  is excluded, per the request). Coverage is decided from the definition registry:
+  an object is covered when a registry row is COMPLETED / COMPLETED_WITH_WARNINGS
+  AND its `last_analyzed_hash` equals the object's current definition hash;
+  everything else is reported and tagged `coverage_reason` (`NOT_REGISTERED`,
+  `REGISTERED_NOT_YET_ANALYZED`, `ANALYSIS_<status>`, or
+  `DEFINITION_CHANGED_NOT_REANALYZED`). Results are DISTINCT by definition
+  (deduped on `definition_hash = TO_HEX(SHA256(sql))` via `QUALIFY ROW_NUMBER()`),
+  so repeated Scheduled Query / DAG runs of the same SQL collapse to one row and
+  the report does not pile up across runs. For CTAS jobs the `CREATE ... AS` prefix
+  is stripped with the exact regex from 03's `normalized_definitions`, so the
+  computed hash lines up with the registry's stored hash. Mirrors the 08 report
+  skeleton and the 03 [A]/[B]/[C] DECLARE layout; all qualified identifiers are
+  backtick-quoted (team rule) and anonymized (`project_id` / `dataset`). SQL-only;
+  the engine bundle is unchanged. Not yet validated against BigQuery.
+
+- Hardened the STEP 2 children filter so a parent `SCRIPT` job is never analyzed.
+  The script-variable work widened the JOBS scan to also read `SCRIPT` jobs (for
+  DECLARE extraction), and excluded them from the generated-table flow with
+  `destination_table IS NOT NULL`. But some `SCRIPT` jobs DO carry a
+  `destination_table` (e.g. a script whose single effective statement is a CTAS),
+  so such a script slipped into the flow, was registered as a generated table, and
+  was handed to the analysis UDF as a whole multi-statement script — producing a
+  query-parser "top-level SELECT not found" failure. The `target_jobs` filter now
+  also requires `statement_type IN UNNEST(collected_statement_types)` (a `SCRIPT`
+  is never a collected type), so scripts are used only for variable extraction and
+  never registered or analyzed. Self-healing: the child SELECT / CTAS statement was
+  always collected, so once the script is excluded the child becomes the
+  representative for its destination and the next run overwrites the registry row's
+  `definition_text` with the single statement (re-analyzed cleanly); ephemeral
+  variants age out by fingerprint recency. SQL-only; the engine bundle is
+  unchanged. Not yet validated against BigQuery.
+
+- Wired the pipeline half of script-variable handling (case X: persist on the
+  registry). `01_setup_lineage_environment.sql` adds a nullable
+  `script_variables ARRAY<STRING>` column to the definition registry (with an
+  `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migration note for existing
+  deployments, since the CREATE is destructive). `03_run_daily_lineage_pipeline.sql`
+  STEP 2 now, in the SAME `INFORMATION_SCHEMA.JOBS_BY_PROJECT` scan, also reads
+  parent `SCRIPT` jobs (they have no destination table, so the scan's WHERE was
+  widened; children still require a destination) and captures `parent_job_id`. From
+  those it builds `script_declared_variables` (DECLAREd names per SCRIPT, extracted
+  with `REGEXP_EXTRACT_ALL(query, r'(?i)\bDECLARE\s+(<ident-list>)')` and split on
+  commas, restricted to scripts that are actually a `parent_job_id` of a collected
+  child) and `job_script_variables` (child job → its parent's variable names). The
+  names ride into `latest_generated_table_definitions` via a `job_id` join and are
+  MERGEd into the registry's new column (UPDATE uses
+  `COALESCE(source, target)` so an older representative not re-collected this run
+  never erases a stored value). STEP 3 threads `script_variables` from the registry
+  through the discovery accumulator (`changed_definitions_to_analyze` →
+  `all_changed_with_discovery` → per-dataset read → `batch_analysis_input`) and adds
+  it to the per-object analysis-UDF options STRUCT, so the engine (previous entry)
+  treats a script variable as an opaque value rather than a missing column. Only
+  child statements of a script carry values; Views and non-script jobs stay NULL
+  (engine no-op). SQL-only; the engine bundle is unchanged. Not yet validated
+  against BigQuery.
+
+- Added a `script_variables` analysis option so a BigQuery multi-statement script's
+  child statement no longer false-fails on the parent's variables. A script like
+  `DECLARE aaa STRING; SET aaa='20250818'; SELECT * FROM t WHERE dt = aaa` records
+  the parent as statement_type=SCRIPT and the child `SELECT ... WHERE dt = aaa` as
+  its own statement_type=SELECT job — and the child's stored query text has no
+  DECLARE/SET context, so `aaa` appears as a bare identifier indistinguishable from
+  a column and resolved to PHYSICAL_COLUMN_NOT_FOUND (ERROR → FAILED, retried).
+  Unlike `@param` / `?`, a script variable has no syntactic marker, so the fix uses
+  context: `analyzeLineageForBigQuery`'s options now accept
+  `script_variables: [...]` (the parent script's declared variable names). In the
+  physical resolver, an unqualified reference that could not be resolved as a column
+  (PHYSICAL_COLUMN_NOT_FOUND / UNRESOLVED_COLUMN) whose name is in that set is
+  reclassified as `SCRIPT_VARIABLE_RESOLVED` — an opaque value with no lineage and
+  no diagnostic. Column precedence is preserved: a name that DOES resolve to a real
+  column stays a column (BigQuery resolves a column over a same-named variable), and
+  an ambiguous-but-real column stays ambiguous; a qualified `t.aaa` is never treated
+  as a variable; and a not-found name that is not in the set still errors (no
+  over-suppression). Empty/absent `script_variables` changes nothing. This is the
+  engine half; the pipeline half (03 STEP 2 collecting the parent SCRIPT's DECLAREs
+  by `parent_job_id` and passing them per object) follows separately. Test:
+  `test_v1_5_0_067.js`. Engine change: bundle rebuilt (`release_manifest.json`
+  sha256 / size_bytes updated); redeploy the UDF bundle to GCS.
+
+- Recognized positional query parameters (`?`) so parameterized DAG SQL analyzes
+  cleanly. Parameterized queries (run by DAGs / clients) keep their `@name` and
+  `?` placeholders in the stored SQL text (JOBS.query); the parameter *values* are
+  bound separately, so the analyzer sees the placeholders. Named `@param` was
+  already lexed as a PARAMETER token and worked, but a bare positional `?` — a
+  parameter with no identifier — was an unknown character that failed the parse
+  (PARTIAL_FAILURE), which is indistinguishable from a genuinely unresolvable
+  object. Fix: the lexer now reads `?` as a PARAMETER token, exactly like `@name`.
+  A parameter is an opaque value with no lineage, so `?` anywhere (WHERE, IN list,
+  LIMIT, SELECT, BETWEEN) no longer affects lineage and the analysis COMPLETEs;
+  named `@param` behavior is unchanged. Test: `test_v1_5_0_066.js`. Engine change:
+  bundle rebuilt (`release_manifest.json` sha256 / size_bytes updated); redeploy
+  the UDF bundle to GCS.
+
+- Allowed `-` (hyphen) in the repository table names this system creates. The
+  name-format ASSERTs on `table_definition_registry` / `table_direct_dependency` /
+  `table_impact` / `table_diagnostic` / `table_job_registry` (in
+  `01_setup_lineage_environment.sql` and `03_run_daily_lineage_pipeline.sql`) went
+  from `^[A-Za-z0-9_]+$` to `^[A-Za-z0-9_-]+$`, so a `table_name_prefix` /
+  `table_name_suffix` containing a hyphen (e.g. `-tky`) is accepted. This is safe
+  because every reference to these tables is backtick-quoted (01 CREATE, 03/06/07/08
+  reads, all via `` `project.dataset.table` ``), matching the team's
+  backtick-mandatory rule; BigQuery permits `-` in a table name when it is always
+  quoted. Dataset names, UDF/routine names, target view names, and resolved target
+  dataset names are unchanged — they keep `^[A-Za-z0-9_]+$` because BigQuery does
+  not allow `-` in datasets or routine identifiers. Note: hyphenated ("flexible")
+  table names must always be backtick-quoted and are not supported by every BI tool
+  (e.g. some Looker Studio paths) — prefer `_` unless a hyphen is required. SQL-only;
+  the engine bundle is unaffected. Not yet validated against BigQuery.
+
+- Fixed a false `PHYSICAL_COLUMN_AMBIGUOUS` for an `UNNEST` array argument whose
+  column name collides with a column exposed by a source joined *after* the
+  `UNNEST`. Symptom: with a CTE that has a column `col`,
+  `SELECT Col FROM d.t AS t, UNNEST(Col) AS Col INNER JOIN cte AS t2 ON Col =
+  t2.col` reported `PHYSICAL_COLUMN_AMBIGUOUS` for `Col` with candidate sources
+  `[D.T, CTE]` (COMPLETED_WITH_ERRORS), even though the argument of `UNNEST(Col)`
+  can only be the array column `Col` of the preceding `t`. Cause: the unqualified
+  candidate search considered every source in the scope, so the later-joined CTE
+  (whose `col` matches case-insensitively) was offered as a rival candidate.
+  In GoogleSQL an `UNNEST` array argument is lateral — it can reference only
+  range variables introduced earlier (to its left) in the same `FROM`, plus outer
+  scopes; sources joined after it are not yet in scope. Fix: `#findUnqualifiedCandidates`
+  now takes the owning `UNNEST` source and, in that source's own scope, drops the
+  owner itself and every source that appears after it (`source_seq` greater),
+  leaving only preceding sources (outer scopes are unrestricted for correlation).
+  No over-suppression: an argument that is genuinely ambiguous across two
+  *preceding* sources is still `PHYSICAL_COLUMN_AMBIGUOUS`, and ordinary
+  (non-`UNNEST`) column ambiguity is unchanged. Extends the earlier "an `UNNEST`
+  argument cannot reference its own element" fix to also exclude later siblings.
+  Test: `test_v1_5_0_065.js`. Engine change: bundle rebuilt
+  (`release_manifest.json` sha256 / size_bytes updated); redeploy the UDF bundle
+  to GCS.
+
+- Fixed absent-source not-found WARNINGS leaking into `lineage_diagnostic` for
+  JOBS-sourced objects after the option-D metadata scoping. STEP 3 suppresses the
+  diagnostics of *publishable* objects (exact COMPLETED, or COMPLETED_WITH_WARNINGS
+  whose warnings are all from sources absent from INFORMATION_SCHEMA.TABLES), so a
+  reference to a gone table should finish clean. But option D scoped
+  `current_target_columns` (the COLUMNS scan, used for `has_columns`) to only the
+  referenced source datasets, while `current_target_tables` (the TABLES scan, used
+  for `exists_in_tables`) still covers every source dataset because STEP 2 needs
+  it. In `batch_object_source_flags` this scope mismatch made a source that exists
+  in a dataset that was NOT column-scanned look `exists_in_tables = TRUE` AND
+  `has_columns = FALSE` → `has_present_uncollected_source = TRUE` → object
+  non-publishable → its absent-source not-found warnings were recorded. Fix:
+  restrict the existence check in `batch_object_source_flags` to the same
+  referenced datasets the columns were collected for, so a source whose dataset
+  was not column-scanned is treated as absent (`has_absent_source`, suppressed)
+  rather than present-but-uncollected. Genuine coverage gaps within a referenced
+  dataset (table present, columns empty) are still flagged and still FAIL. Before
+  option D both scans covered all datasets, so this class of object was already
+  suppressed — this restores that for the scoped world. SQL-only (STEP 3 flag
+  computation); the engine bundle is unaffected. Not yet validated against BigQuery.
+
+- Stopped an unqualified column reference to a no-longer-existing source table from
+  hard-failing analysis of a JOBS-sourced object. A DAG / generated-table SQL often
+  references temporary or short-lived tables that are gone by analysis time.
+  Symptom: `SELECT col1 FROM ghost_ds.ghost_table AS a JOIN real_ds.real_t AS b ON
+  a.id = b.id`, where `ghost_table` has no collected columns and `real_t` does not
+  contain `col1`, produced `PHYSICAL_COLUMN_NOT_FOUND` (ERROR) →
+  COMPLETED_WITH_ERRORS → non-publishable → registry FAILED and retried every run.
+  A *qualified* reference to the same absent table (`a.col1`) was already only a
+  `PHYSICAL_METADATA_NOT_FOUND` WARNING (via `#resolveAgainstPhysicalSource` /
+  `#hasMetadataForSource`), so the prior absent-source publish handling (STEP 3
+  `batch_object_source_flags`, which classifies a source absent from
+  INFORMATION_SCHEMA.TABLES as gone) covered qualified references but not
+  unqualified ones. Cause: the multi-candidate path `#disambiguateAcrossSources`
+  emitted `PHYSICAL_COLUMN_NOT_FOUND` whenever no *present* (metadata-collected)
+  source exposed the column, ignoring whether a candidate source had no collected
+  metadata at all. Fix: when the column is found in no present source but a
+  candidate physical source has no collected metadata (absent or uncollected), the
+  reference is now classified as `PHYSICAL_METADATA_NOT_FOUND` (WARNING) and
+  attributed to that source — the column may legitimately belong to the gone
+  table, exactly as the qualified case already behaves. The absent-vs-uncollected
+  distinction stays with STEP 3 (INFORMATION_SCHEMA.TABLES): a genuinely gone
+  source is published, a present-but-uncollected source (real coverage gap) still
+  FAILs. No over-suppression: when every source is present with metadata, a missing
+  column is still an ERROR (`PHYSICAL_COLUMN_NOT_FOUND`), and the `PHYSICAL_AMBIGUOUS`
+  path (column in >1 present source) is unchanged. Test: `test_v1_5_0_064.js`.
+  Engine change: bundle rebuilt (`release_manifest.json` sha256 / size_bytes
+  updated); redeploy the UDF bundle to GCS.
+
+- Moved the collection/analysis scope filters in `03_run_daily_lineage_pipeline.sql`
+  from `[B] BEHAVIOR OPTIONS` to `[A] REQUIRED per deployment / region`:
+  `registry_exclude_object_patterns` / `registry_exclude_dataset_patterns` and
+  `analysis_include_object_patterns` / `analysis_exclude_object_patterns` /
+  `analysis_include_dataset_patterns` / `analysis_exclude_dataset_patterns`. These
+  determine which objects a given deployment registers and analyzes, so they belong
+  with the must-review settings. Comment blocks moved with the variables; each is
+  still declared exactly once and behavior is unchanged. SQL-only.
+
+- Applied the same `[A] REQUIRED / [B] BEHAVIOR OPTIONS / [C] DERIVED-INTERNAL`
+  three-section DECLARE layout to the remaining scripts: `01_setup_lineage_environment.sql`,
+  `04_validate_lineage_environment.sql`, `06_analyze_changed_objects.sql`,
+  `07_run_single_view_analysis.sql`, and `08_view_last_access.sql`. In each, the
+  must-edit settings are grouped first ([A]: default project, repository/UDF
+  datasets, region, the GCS bundle URI in 01/04, the audit sink in 08, table
+  name prefix/suffix, the single target view in 07), tuning knobs follow ([B]:
+  UDF names, parser/compact/max-impact options, lookback and dataset-filter
+  patterns), and the auto-computed values are separated at the end and marked
+  "DO NOT edit" ([C]: the role-specific *_project_id defaulting to the master,
+  the @@location-mirroring region/location variables, FORMAT-derived names, and
+  all working variables). Pure reordering of DECLAREs plus comments: every
+  variable, type, and default is unchanged (verified each declared exactly once,
+  the master project variable still precedes the role variables that default to
+  it, and all DECLAREs remain ahead of the block's first statement). Behavior is
+  identical. SQL-only; the engine bundle is unaffected. Not yet validated against
+  BigQuery.
+
+- Reorganized the `03_run_daily_lineage_pipeline.sql` DECLARE block into three
+  labelled sections so operators can see at a glance what to edit per deployment /
+  region. `[A] REQUIRED per deployment / region` (default_project_id, repository /
+  UDF datasets, source_project_filters, target dataset patterns, STEP 2 service
+  accounts, table name prefix/suffix) is grouped first; `[B] BEHAVIOR OPTIONS`
+  (UDF names, parser_strict_mode, max impact rank, process_generated_tables,
+  registry/analysis filters, lookback windows, statement types, label toggles)
+  follows; `[C] DERIVED / INTERNAL` (job_region ← @@location, the role-specific
+  *_project_id ← default_project_id, the runtime-resolved target_datasets, and all
+  working variables) is separated at the end and marked "DO NOT edit". The header
+  documents the split and points to `SET @@location` (top of file) plus section
+  [A] as the only things to change when standing up a new region. Purely a
+  reordering of DECLAREs plus comments: every variable, type, and default is
+  unchanged (verified each declared exactly once, no duplicates), the master
+  `default_project_id` still precedes the role variables that default to it, and
+  all DECLAREs remain ahead of the first SET. Behavior is identical. SQL-only; the
+  engine bundle is unaffected. Not yet validated against BigQuery.
+
+- Made the GCP project a single point of configuration in every pipeline/maintenance
+  script. Each script previously repeated `DEFAULT 'project_id'` for each role
+  (repository / target / UDF, plus audit in 08), even though those roles always share
+  one project in this deployment. Each script now declares one master
+  `default_project_id` (`bootstrap_default_project_id` in the `bootstrap_`-prefixed
+  01 / 04) and the role-specific `*_project_id` variables `DEFAULT` to it, mirroring
+  the `@@location` → `job_region` single-source pattern. Set the project once at the
+  master line; a role that ever needs a different project can still override its own
+  line (kept for that reason). The master is declared before the roles that reference
+  it (BigQuery `DEFAULT` may reference earlier-declared variables). In 03 the master
+  is named `default_project_id` specifically to avoid shadowing the `project_id`
+  column used in the source-dataset scans. `source_project_filters` in 03 is
+  unchanged: physical source tables can span multiple projects by design, so it stays
+  an explicit per-source list. In 08 `audit_project_id` also defaults to the master
+  but is documented as overridable, since the audit-log sink can live in a separate
+  project. Files: `sql/pipeline/03_*`, `sql/setup/01_*`, `sql/validation/04_*`,
+  `sql/maintenance/06_*`, `07_*`, `08_*`, and `sql/debug/debug_v_customer_primary_contact.sql`.
+  SQL-only; the engine bundle is unaffected. Not yet validated against BigQuery.
+
+- Fixed a false `PHYSICAL_COLUMN_NOT_FOUND` for an unqualified array argument in a
+  correlated `UNNEST` join, e.g. `FROM t AS a, UNNEST(col1) AS b LEFT JOIN
+  UNNEST(col2) AS c` where `col2` is a struct field of `col1`'s element (i.e.
+  `b.col2`). Symptom: the unqualified `UNNEST(col2)` reported
+  `PHYSICAL_COLUMN_NOT_FOUND` for `COL2` (analysis → COMPLETED_WITH_ERRORS), while
+  the qualified form `UNNEST(b.col2)` did not. Cause: the reference `col2` is the
+  array argument of the third `UNNEST` source `c`, and the candidate set for the
+  unqualified name included `c` itself. The physical resolver only treats an
+  unqualified name as a preceding `UNNEST`'s element field when exactly one `UNNEST`
+  candidate remains (physical_column_resolver.js), but here two were present (`b`
+  and the self source `c`), so it fell through to `PHYSICAL_COLUMN_NOT_FOUND`. An
+  `UNNEST` array expression can never reference its own element (that would be
+  circular). Fix: the column resolver now threads the owning `UNNEST` source id into
+  the array-argument reference context and excludes that owning source from the
+  unqualified-candidate search (both the value-alias and the general candidate
+  lookups). With the self source removed, a single preceding `UNNEST` (`b`) remains
+  and the existing correlated-`UNNEST` element-field resolution applies, matching the
+  qualified form (the unnested value stays `PARTIALLY_RESOLVED`, a warning, not an
+  error). Genuine ambiguity is preserved: with two or more preceding `UNNEST`s the
+  unqualified field is still unresolved (no silent guess). Covered by
+  `test/test_v1_5_0_063.js` (unqualified vs qualified parity, the two-preceding-UNNEST
+  ambiguity guard, and a top-level-array-column control). Engine change: bundle
+  rebuilt (`release_manifest.json` sha256 / size_bytes updated).
+
+- Fixed a false `PHYSICAL_COLUMN_NOT_FOUND` when an `UNNEST` array argument inside
+  a correlated subquery references an outer `SELECT` alias and the subquery has two
+  or more `UNNEST` sources. Symptom: a view like
+  `SELECT g, ARRAY_AGG(col) AS arr FROM t GROUP BY ALL HAVING EXISTS (SELECT 1 FROM
+  UNNEST(arr) AS a INNER JOIN UNNEST(['x','y']) AS b ON a = b)` reported
+  `PHYSICAL_COLUMN_NOT_FOUND` for `arr` (analysis → COMPLETED_WITH_ERRORS), even
+  though `arr` is the outer aggregate alias, not a physical column. Cause: the
+  unqualified array-argument reference `arr` was resolved only against the
+  subquery's local sources; those `UNNEST` sources expose an unknown column set at
+  the resolver stage, so every one of them was a blanket candidate — with a single
+  `UNNEST` it silently (and wrongly) resolved to that source, and with two or more
+  it became `AMBIGUOUS`, which the physical resolver then reports as
+  `PHYSICAL_COLUMN_NOT_FOUND`. The correlated path to the outer query's `SELECT`
+  alias was never tried because output-alias visibility was limited to the
+  reference's own clause (`GROUP BY` / `HAVING` / `QUALIFY` / `ORDER BY`) and its
+  own scope, whereas the array argument sits in the subquery's `FROM_UNNEST` /
+  `JOIN_UNNEST` clause. Fix: for a `UNNEST` array-argument reference with no
+  confident local match (no local source that is known to expose the column), the
+  column resolver now walks ancestor scopes for a unique matching `SELECT` output
+  alias and resolves to it as `SELECT_ALIAS_RESOLVED` (the physical resolver passes
+  that through without a physical lookup; the aggregate expression already carries
+  the dependency lineage). A known local column still wins (inner scope precedence),
+  and non-`UNNEST` clauses are untouched, so `WHERE` / `JOIN ON` resolution is
+  unchanged. Covered by `test/test_v1_5_0_062.js` (INNER JOIN and comma forms with
+  two `UNNEST`s, plus a single-`UNNEST` regression guard). Engine change: bundle
+  rebuilt (`release_manifest.json` sha256 / size_bytes updated).
+
+- Scope the STEP 3 column-metadata scan in `03_run_daily_lineage_pipeline.sql` to
+  only the source datasets that changed objects actually reference. Previously the
+  has-changes gate still loaded COLUMNS / COLUMN_FIELD_PATHS for *every* source
+  dataset in the region (the heaviest scan in the run) whenever anything changed,
+  even when the day's changes touched a handful of datasets. STEP 3 now runs a
+  discovery pre-pass: a `FOR` loop over `changed_datasets` runs the persistent UDF
+  in `source_discovery_only` mode once per changed object (per dataset, to bound
+  V8 heap), accumulates every row with its `source_discovery_json` into a
+  `all_changed_with_discovery` temp table, and collects the referenced source
+  dataset names (the dataset segment of each discovered source) into
+  `referenced_source_datasets`. The metadata load then unions
+  INFORMATION_SCHEMA.COLUMNS / COLUMN_FIELD_PATHS only for accessible source
+  datasets whose name is referenced (with an empty-but-typed fallback when nothing
+  is referenced). This is safe over-inclusion — it never loads less than the
+  referenced accessible sources, so lineage resolution is unchanged; it only skips
+  datasets no changed object references. The per-dataset analysis loop no longer
+  runs its own discovery UDF pass: it reads this dataset's rows back from
+  `all_changed_with_discovery` (isolation semantics unchanged — a failing object
+  still surfaces only as its own `source_discovery_json` cell and is validated
+  per-object). SQL-only change; the engine bundle is unaffected. Not yet validated
+  against BigQuery.
+
+- Skip the expensive per-run work in `03_run_daily_lineage_pipeline.sql` when
+  nothing changed. The COLUMNS / COLUMN_FIELD_PATHS scan over every source dataset
+  (the heaviest scan in the run) was loaded unconditionally in STEP 1 but is only
+  consumed by STEP 3 analysis; it now moves into STEP 3 behind a has-changes gate.
+  A light registry probe computes `changed_datasets` (datasets with an analyzable
+  changed object, mirroring the materialization filter); when it is empty the
+  metadata scan and the entire per-dataset analysis loop are skipped, and the loop
+  now iterates only those datasets (no empty iterations). STEP 4 impact rebuild is
+  gated on `has_analysis_work OR orphan_direct_dep_deleted > 0` (captured via
+  `@@row_count` after the direct-dependency orphan DELETE), so it runs only when a
+  re-analysis happened or an object was deactivated; an unchanged daily run leaves
+  impact as-is. STEP 1 view sync, STEP 2 JOBS sync, and the orphan cleanup still
+  run every time (change detection and deactivation handling). SQL-only change;
+  the engine bundle is unaffected. Not yet validated against BigQuery.
+
+- Added `sql/maintenance/08_view_last_access.sql`, a standalone read-only report
+  of each tracked VIEW's last access time, built on BigQuery audit logs sinked to
+  BigQuery (new format: `protopayload_auditlog.metadataJson`,
+  BigQueryAuditMetadata). It reads
+  `$.jobChange.job.jobStats.queryStats.referencedViews`, which identifies the
+  VIEW itself (separate from `referencedTables`) — unlike
+  `INFORMATION_SCHEMA.JOBS.referenced_tables`, which does not reliably distinguish
+  a view from its base tables. Accesses are LEFT JOINed to the definition registry
+  so views never queried in the window show `last_accessed_at = NULL`
+  (unused-view candidates) alongside the pipeline's `last_seen_at` /
+  `last_analyzed_at`. Audit table location, target project, registry name,
+  lookback, and dataset include/exclude patterns are DECLAREs; `@@location` must
+  match both the audit table and the repository (single-region). Also surfaces the
+  accessing job's `data_source_id` label (from
+  `$.jobChange.job.jobConfig.labels.data_source_id`) as `last_data_source_id` —
+  the value at the most recent access. Documents the legacy-format path, the
+  same-region join requirement (with a pure-audit fallback query), retention, and
+  the cache-hit caveat. Read-only; not part of the daily pipeline. Not yet
+  validated against BigQuery.
+
+- Made `@@location` the single source of truth for the pipeline region in
+  `03_run_daily_lineage_pipeline.sql`. `job_region` is now
+  `DECLARE job_region STRING DEFAULT @@location` instead of a duplicated literal,
+  so the region is set only at the `SET @@location` line. `@@location` sets the
+  job execution location; `job_region` carries the same value as a string for the
+  region-qualified INFORMATION_SCHEMA identifiers (`region-<job_region>`), which
+  cannot be parameterized. The `ASSERT @@location = job_region` equality check is
+  removed (the values can no longer drift); the `job_region` format ASSERT
+  remains. Verified in BigQuery that `DEFAULT @@location` is accepted. Applied the
+  same single-source treatment to the setup and validation scripts:
+  `01_setup_lineage_environment.sql` now declares
+  `bootstrap_repository_location DEFAULT @@location`, and
+  `04_validate_lineage_environment.sql` declares both
+  `bootstrap_repository_location` and `bootstrap_target_region`
+  `DEFAULT @@location`. 04's "repository and target location match" check (id 20)
+  is now structurally guaranteed to PASS and is kept only to surface the resolved
+  region in the report.
+
+- Declared and created `render_dynamic_sql` with the same convention as the
+  analyze / fingerprint UDFs. 03 now declares `udf_render_function_name` in the
+  UDF config block beside `udf_function_name` / `udf_fingerprint_function_name`
+  (with a matching name ASSERT); 01 declares `bootstrap_udf_render_function_name`,
+  creates the function via `CREATE OR REPLACE FUNCTION \`%s.%s.%s\`` (name no
+  longer hardcoded), and reports it as `render_udf` in the setup summary; the
+  redeploy helper takes the name from a DECLARE too. No behavior change.
+
+- Relocated the persistent `render_dynamic_sql` to the UDF dataset (alongside
+  `analyze_lineage_json`) and made its location DECLARE-configurable in 03.
+  `01_setup_lineage_environment.sql` now creates it at
+  `bootstrap_udf_project_id.bootstrap_udf_dataset` instead of the repository
+  dataset; `sql/bigquery/create_render_dynamic_sql_udf.sql` matches. A static
+  function reference cannot use a variable for its project/dataset, so 03 no
+  longer hardcodes `` `project_id.lineage_repository.render_dynamic_sql` `` at 32
+  sites. Instead it builds one reusable dynamic call, `render_call_sql`, right
+  after the `repo_tables` block — `SELECT
+  `udf_project_id.udf_dataset.udf_render_function_name`(@sql_template, <baked
+  config>)` — and every call site runs `EXECUTE IMMEDIATE render_call_sql INTO
+  rendered_sql USING sql_template AS sql_template`. The renderer location is now
+  driven by the existing `udf_project_id` / `udf_dataset` DECLAREs plus a new
+  `udf_render_function_name` DECLARE (default `render_dynamic_sql`); only
+  `@sql_template` is bound per call (the fixed config is baked in once), so no
+  STRUCT query parameter is needed. SQL-only change; the engine bundle is
+  unaffected. Not yet validated against BigQuery.
+
+- Moved `render_dynamic_sql` from a script TEMP FUNCTION in
+  `03_run_daily_lineage_pipeline.sql` to a **persistent SQL function** created by
+  `01_setup_lineage_environment.sql` in the repository dataset, and made the
+  per-step progress markers effective. BigQuery prepends every script TEMP
+  FUNCTION's DDL to the query text of every child job, so the console's "All
+  results" list showed only that prepended `create temp function
+  render_dynamic_sql(` header for every statement — confirmed empirically: even a
+  dynamic `SELECT` marker was masked by it. `render_dynamic_sql` is now a
+  persistent function; 03 removes the `CREATE TEMP FUNCTION` and calls it by the
+  qualified literal `` `project_id.lineage_repository.render_dynamic_sql` `` at all
+  32 call sites, so nothing is prepended and each statement shows its own SQL.
+  Added `sql/bigquery/create_render_dynamic_sql_udf.sql` to redeploy the function
+  in place. Added step-level progress markers (STEP 1/2/4 banners and STEP 3
+  per-dataset / discovery / analysis markers) that now surface in "All results".
+  Migration: existing environments must recreate the function (re-run 01 setup or
+  the new redeploy helper) before running this 03. Keep the qualified literal in 03
+  in step with the repository location (bootstrap_repository_project_id /
+  bootstrap_repository_dataset in 01). SQL-only change; the engine bundle is
+  unaffected. Not yet validated against BigQuery.
+
+- Added a per-iteration progress marker to `03_run_daily_lineage_pipeline.sql`
+  STEP 3. Because `render_dynamic_sql` is a script TEMP FUNCTION, BigQuery
+  prepends its `CREATE TEMP FUNCTION` DDL to the query text of every child job
+  that calls it, so the console's "All results" list showed only "create temp
+  function render_dynamic_sql(" for each statement — and the per-dataset loop
+  multiplied those entries. Each loop iteration now runs
+  `EXECUTE IMMEDIATE FORMAT("SELECT '===== STEP 3 analysis | dataset: %s ====='
+  AS processing_target", ds_row.ds)` first, baking the dataset name into the
+  executed text so the All results list surfaces which dataset is being
+  processed. SQL-only change; the engine bundle is unaffected.
+
+- Replaced the fixed-size UDF chunking in `03_run_daily_lineage_pipeline.sql`
+  STEP 3 with a **per-dataset analysis loop**, and removed the chunking. Running
+  the per-row JavaScript lineage UDF across every changed object in the region in
+  one pass accumulated V8 heap in the per-slot UDF context and hit "Resource
+  exceeded during query execution: UDF out of memory" at thousands of objects;
+  row-count chunking bounded the invocation count per job but not the aggregate
+  memory when large objects clustered in a chunk, so it still OOMed. Operators
+  confirmed that analyzing one dataset at a time succeeds, so STEP 3 now wraps the
+  change-detection → source-discovery → analysis → direct-dependency publish body
+  in `FOR ds_row IN (SELECT ds FROM UNNEST(target_datasets) ... ) DO ... END FOR`,
+  scoping the analysis set to a single dataset per iteration via an anchored
+  `['^' || ds || '$']` include pattern. The loop list still honors the configured
+  `analysis_include_dataset_patterns` / `analysis_exclude_dataset_patterns`.
+  Per-dataset scoping shrinks not just the UDF row-batch but every intermediate
+  (`changed_definitions_with_discovery`, `batch_object_metadata`,
+  `batch_analysis_input`, `batch_udf_results`), which is why one dataset at a time
+  stays under the UDF memory ceiling. Both UDF passes (source discovery and STEP 3
+  analysis) are back to a single query each — the `discovery_udf_chunk_*` /
+  `analysis_udf_chunk_*` DECLAREs, the `udf_chunk` bucket column, and the two
+  `WHILE` chunk loops are gone. What stays outside the loop: `target_datasets`
+  resolution, the global physical-metadata snapshot (`current_target_columns`,
+  loaded once in STEP 1 across all target datasets, so cross-dataset source
+  references still resolve), the orphan-row cleanup, and the STEP 4 impact rebuild
+  (impact spans datasets, so it runs once after all direct dependencies are
+  published). The `analyzed_object_count` / `failed_object_count` counters now
+  accumulate across iterations and the run summary is emitted once after the loop.
+  Registry status updates were already scoped to the analyzed batch subset
+  (`batch_completed_objects` and the failed set), so per-dataset iteration does not
+  touch other datasets' rows. SQL-only change; the engine bundle is unaffected.
+  Not yet validated against BigQuery.
+
 - Also chunked the batch **source-discovery** UDF pass, which the STEP 3 chunking
   had missed. `03_run_daily_lineage_pipeline.sql` runs the JavaScript UDF a
   second time over every changed definition in `source_discovery_only` mode to

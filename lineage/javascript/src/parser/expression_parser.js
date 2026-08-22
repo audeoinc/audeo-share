@@ -932,6 +932,24 @@ class ExpressionParser {
       while (true) {
         argumentsList.push(this.#parseOrExpression());
 
+        /*
+         * 無型 STRUCT コンストラクタ STRUCT(expr AS field, ...) は各フィールドに
+         * 任意の `AS <name>` を付ける。この別名はフィールドラベルであって列参照では
+         * ないため、消費して捨てる（値式のみが lineage を持つ）。他の関数は
+         * `expr AS name` を取らないので、他所の構文エラーを覆い隠さないよう STRUCT に
+         * 限定する。BigQuery の生成 SQL では UNNEST(IF(..., [STRUCT(cast(null AS t)
+         * AS f, ...)])) のように FROM 内でも現れ、そこでは式単位の復旧が効かないため
+         * 明示的に対応する必要がある。
+         */
+        if (functionName === "STRUCT" && this.#matches("AS")) {
+          this.#consume();
+          if (!this.#isEnd() &&
+              !this.#matches(",", false) &&
+              !this.#matches(")", false)) {
+            this.#consume();
+          }
+        }
+
         if (!this.#matches(",", false)) {
           break;
         }
@@ -1359,12 +1377,31 @@ class ExpressionParser {
     return values.some((value) => this.#matches(value, normalized));
   }
 
+  #location(token) {
+    if (!token) return "at end of input";
+    return `at line ${token.line_no} column ${token.column_no} ` +
+      `(token_seq ${token.token_seq})`;
+  }
+
+  /* A short window of raw token text around the current position, to make a parse
+   * failure locatable from the diagnostic message alone (no source offsets needed). */
+  #contextSnippet() {
+    const from = Math.max(0, this.index - 5);
+    const to = Math.min(this.tokens.length, this.index + 3);
+    const parts = this.tokens
+      .slice(from, to)
+      .map((token) => token.token)
+      .filter((text) => text !== undefined && text !== null);
+    return parts.join(" ");
+  }
+
   #expect(value, normalized = true) {
     if (!this.#matches(value, normalized)) {
       const token = this.#current();
       const actualValue = token ? token.token : "EOF";
       throw new SyntaxError(
-        `ExpressionParser: expected "${value}", but found "${actualValue}".`
+        `ExpressionParser: expected "${value}", but found "${actualValue}" ` +
+        `${this.#location(token)} near: ${this.#contextSnippet()}`
       );
     }
 

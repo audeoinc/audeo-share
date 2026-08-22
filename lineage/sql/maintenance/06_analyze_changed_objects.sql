@@ -13,7 +13,7 @@ SET @@location = 'asia-northeast1';
 -- ============================================================================
 -- Only SQL identifiers are replaced here.
 -- Runtime values continue to be passed with EXECUTE IMMEDIATE ... USING.
-CREATE TEMP FUNCTION render_dynamic_sql(
+CREATE TEMP FUNCTION lnge_render_dynamic_sql(
   sql_template STRING,
   repository_project_id STRING,
   repository_dataset STRING,
@@ -53,18 +53,96 @@ BEGIN
   -- ==========================================================================
   -- Runtime environment settings
   -- ==========================================================================
-  DECLARE repository_project_id STRING DEFAULT 'project_id';
-  DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
-  DECLARE target_project_id STRING DEFAULT 'project_id';
-  DECLARE target_dataset STRING DEFAULT 'dataset';
+  -- --------------------------------------------------------------------------
+  -- [A] REQUIRED per deployment / region -- set these
+  -- --------------------------------------------------------------------------
+  -- Variables are grouped by purpose below; each group is labeled with a one-line
+  -- header. Full descriptions follow the block under "Variable notes".
+  -- GCP project: auto-detected at runtime; its DECLARE lives in [B] (pin it there
+  -- only to run against a different project).
+  -- Project-token substitution
+  DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
+  -- Region & datasets (repository / target / UDF)
   DECLARE job_region STRING DEFAULT 'asia-northeast1';
-  DECLARE udf_project_id STRING DEFAULT 'project_id';
+  DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
+  DECLARE target_dataset STRING DEFAULT 'dataset';
   DECLARE udf_dataset STRING DEFAULT 'dataset';
-  DECLARE udf_function_name STRING DEFAULT 'analyze_lineage_json';
+  -- UDF naming (prefix / suffix)
+  DECLARE udf_name_prefix STRING DEFAULT '';
+  DECLARE udf_name_suffix STRING DEFAULT '';
+  --
+  -- Variable notes (keyed by name):
+  --   project_token_pattern
+  --     Project-token substitution regex (keep in step with 01). A token extracted
+  --     from the auto-detected project id replaces every '{project_token}'
+  --     placeholder in the dataset names and udf prefix/suffix. Default: first
+  --     hyphen segment.
+  --   job_region / repository_dataset / target_dataset / udf_dataset
+  --     Region (must equal @@location) and the repository / target / UDF datasets.
+  --   udf_name_prefix / udf_name_suffix
+  --     Analysis UDF name: assembled in [C] as udf_prefix + 'lnge_' + base +
+  --     udf_suffix (must match 01). Routine names allow only letters/digits/'_'
+  --     (no '-').
+
+  -- --------------------------------------------------------------------------
+  -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
+  -- --------------------------------------------------------------------------
+  -- GCP project. Declared here (not in [A]) because it is normally not set by hand:
+  -- it is auto-detected in [C] from INFORMATION_SCHEMA.SCHEMATA (the project the job
+  -- runs in). To pin it, set a literal in [C]. Repository, target, and UDFs share
+  -- one project; the role-specific *_project_id variables live in [C] and take this.
+  DECLARE default_project_id STRING;
+  -- Analysis UDF function name: assembled in [C] from the udf prefix/suffix in [A]
+  -- (must match 01). Routine names allow only letters/digits/'_' (no '-').
+  DECLARE udf_function_name STRING;
   DECLARE parser_strict_mode BOOL DEFAULT FALSE;
 
+  -- --------------------------------------------------------------------------
+  -- [C] DERIVED / INTERNAL -- from [A]; DO NOT edit
+  -- --------------------------------------------------------------------------
+  -- Role-specific projects take default_project_id (auto-detected below); pin a
+  -- line to a literal only if that role's objects live in a separate project.
+  DECLARE repository_project_id STRING DEFAULT NULL;
+  DECLARE target_project_id STRING DEFAULT NULL;
+  DECLARE udf_project_id STRING DEFAULT NULL;
   DECLARE sql_template STRING;
   DECLARE rendered_sql STRING;
+  -- Token extracted from the project id (see project_token_pattern).
+  DECLARE project_token STRING;
+
+  -- Auto-detect the running GCP project from INFORMATION_SCHEMA.SCHEMATA
+  -- (catalog_name). Region-qualified identifier built from @@location; to pin the
+  -- project, replace this SET with a literal. Roles take it unless pinned.
+  EXECUTE IMMEDIATE FORMAT(
+    "SELECT DISTINCT catalog_name FROM `region-%s`.INFORMATION_SCHEMA.SCHEMATA LIMIT 1",
+    @@location
+  ) INTO default_project_id;
+  ASSERT default_project_id IS NOT NULL AS
+    'Could not auto-detect the project id from INFORMATION_SCHEMA.SCHEMATA; set default_project_id to a literal.';
+  SET repository_project_id = COALESCE(repository_project_id, default_project_id);
+  SET target_project_id = COALESCE(target_project_id, default_project_id);
+  SET udf_project_id = COALESCE(udf_project_id, default_project_id);
+  -- Project-token substitution in the name inputs (before names are used).
+  SET project_token =
+    COALESCE(REGEXP_EXTRACT(default_project_id, project_token_pattern), '');
+  SET repository_dataset =
+    REPLACE(repository_dataset, '{project_token}', project_token);
+  SET udf_dataset = REPLACE(udf_dataset, '{project_token}', project_token);
+  SET target_dataset = REPLACE(target_dataset, '{project_token}', project_token);
+  SET udf_name_prefix = REPLACE(udf_name_prefix, '{project_token}', project_token);
+  SET udf_name_suffix = REPLACE(udf_name_suffix, '{project_token}', project_token);
+
+  -- Guard: an unsubstituted '{project_token}' (or any invalid character) in a dataset
+  -- name is surfaced here instead of failing later at DDL time.
+  ASSERT REGEXP_CONTAINS(repository_dataset, r'^[A-Za-z0-9_]+$')
+    AS 'repository_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+  ASSERT REGEXP_CONTAINS(udf_dataset, r'^[A-Za-z0-9_]+$')
+    AS 'udf_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+  ASSERT REGEXP_CONTAINS(target_dataset, r'^[A-Za-z0-9_]+$')
+    AS 'target_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+
+  SET udf_function_name =
+    udf_name_prefix || 'lnge_' || 'analyze_json' || udf_name_suffix;
 
   -- Repository tables are resolved using the declared repository identifiers.
   SET @@dataset_project_id = repository_project_id;
@@ -101,7 +179,7 @@ BEGIN
     WHERE LOWER(table_schema) = LOWER(@target_dataset)
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = lnge_render_dynamic_sql(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -125,7 +203,7 @@ BEGIN
     FROM `__TARGET__.INFORMATION_SCHEMA.COLUMNS`
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = lnge_render_dynamic_sql(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -148,7 +226,7 @@ BEGIN
     FROM `__TARGET__.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS`
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = lnge_render_dynamic_sql(
     sql_template,
     repository_project_id,
     repository_dataset,
@@ -202,11 +280,11 @@ BEGIN
     -- Remove repository rows whose target definition is no longer active.
     -- --------------------------------------------------------------------------
     DELETE FROM
-      `lineage_direct_dependency` AS dependency
+      `lnge_t_direct_dependency` AS dependency
     WHERE NOT EXISTS (
       SELECT 1
       FROM
-        `lineage_definition_registry` AS registry
+        `lnge_m_definition_registry` AS registry
       WHERE registry.is_active = TRUE
         AND LOWER(registry.object_project) = LOWER(dependency.target_project)
         AND LOWER(registry.object_dataset) = LOWER(dependency.target_dataset)
@@ -216,11 +294,11 @@ BEGIN
     );
 
     DELETE FROM
-      `lineage_diagnostic` AS diagnostic
+      `lnge_t_diagnostic` AS diagnostic
     WHERE NOT EXISTS (
       SELECT 1
       FROM
-        `lineage_definition_registry` AS registry
+        `lnge_m_definition_registry` AS registry
       WHERE registry.is_active = TRUE
         AND LOWER(registry.object_project) = LOWER(diagnostic.object_project)
         AND LOWER(registry.object_dataset) = LOWER(diagnostic.object_dataset)
@@ -241,7 +319,7 @@ BEGIN
         definition_text,
         definition_hash
       FROM
-        `lineage_definition_registry`
+        `lnge_m_definition_registry`
       WHERE is_active = TRUE
         AND is_changed = TRUE
         AND definition_text IS NOT NULL
@@ -274,7 +352,7 @@ BEGIN
             )
           """;
 
-          SET rendered_sql = render_dynamic_sql(
+          SET rendered_sql = lnge_render_dynamic_sql(
             sql_template,
             repository_project_id,
             repository_dataset,
@@ -427,7 +505,7 @@ BEGIN
           )
         """;
 
-        SET rendered_sql = render_dynamic_sql(
+        SET rendered_sql = lnge_render_dynamic_sql(
           sql_template,
           repository_project_id,
           repository_dataset,
@@ -479,6 +557,7 @@ BEGIN
           LOWER(target.object_dataset) AS object_dataset,
           LOWER(target.object_name) AS object_name,
           target.object_type AS object_type,
+          target.generation_type AS generation_type,
           COALESCE(JSON_VALUE(diagnostic_row, '$.code'), 'UNKNOWN')
             AS diagnostic_code,
           JSON_VALUE(diagnostic_row, '$.stage') AS engine_stage,
@@ -592,7 +671,7 @@ BEGIN
             parsed.target_object_type
           FROM parsed_edges AS parsed
           LEFT JOIN
-            `lineage_definition_registry`
+            `lnge_m_definition_registry`
               AS source_registry
             ON source_registry.is_active = TRUE
            AND LOWER(source_registry.object_project) = parsed.source_project
@@ -656,7 +735,7 @@ BEGIN
         CREATE OR REPLACE TEMP TABLE previous_direct_dependency AS
         SELECT *
         FROM
-          `lineage_direct_dependency`
+          `lnge_t_direct_dependency`
         WHERE LOWER(target_project) = LOWER(target.object_project)
           AND LOWER(target_dataset) = LOWER(target.object_dataset)
           AND LOWER(target_object) = LOWER(target.object_name)
@@ -666,7 +745,7 @@ BEGIN
         CREATE OR REPLACE TEMP TABLE previous_lineage_diagnostic AS
         SELECT *
         FROM
-          `lineage_diagnostic`
+          `lnge_t_diagnostic`
         WHERE LOWER(object_project) = LOWER(target.object_project)
           AND LOWER(object_dataset) = LOWER(target.object_dataset)
           AND LOWER(object_name) = LOWER(target.object_name)
@@ -675,7 +754,7 @@ BEGIN
         SET replacement_started = TRUE;
 
         DELETE FROM
-          `lineage_direct_dependency`
+          `lnge_t_direct_dependency`
         WHERE LOWER(target_project) = LOWER(target.object_project)
           AND LOWER(target_dataset) = LOWER(target.object_dataset)
           AND LOWER(target_object) = LOWER(target.object_name)
@@ -683,24 +762,24 @@ BEGIN
           AND generation_type = target.generation_type;
 
         INSERT INTO
-          `lineage_direct_dependency`
+          `lnge_t_direct_dependency`
         SELECT *
         FROM staged_direct_dependency;
 
         DELETE FROM
-          `lineage_diagnostic`
+          `lnge_t_diagnostic`
         WHERE LOWER(object_project) = LOWER(target.object_project)
           AND LOWER(object_dataset) = LOWER(target.object_dataset)
           AND LOWER(object_name) = LOWER(target.object_name)
           AND object_type = target.object_type;
 
         INSERT INTO
-          `lineage_diagnostic`
+          `lnge_t_diagnostic`
         SELECT *
         FROM staged_lineage_diagnostic;
 
         UPDATE
-          `lineage_definition_registry`
+          `lnge_m_definition_registry`
         SET
           is_changed = FALSE,
           analysis_status = udf_analysis_status,
@@ -721,19 +800,19 @@ BEGIN
           -- Replace only the diagnostics so the actual parser/resolver reason is
           -- available in lineage_diagnostic for troubleshooting.
           DELETE FROM
-            `lineage_diagnostic`
+            `lnge_t_diagnostic`
           WHERE LOWER(object_project) = LOWER(target.object_project)
             AND LOWER(object_dataset) = LOWER(target.object_dataset)
             AND LOWER(object_name) = LOWER(target.object_name)
             AND object_type = target.object_type;
 
           INSERT INTO
-            `lineage_diagnostic`
+            `lnge_t_diagnostic`
           SELECT *
           FROM staged_lineage_diagnostic;
 
           INSERT INTO
-            `lineage_diagnostic`
+            `lnge_t_diagnostic`
           (
             definition_hash,
             object_project,
@@ -775,7 +854,7 @@ BEGIN
           );
 
           UPDATE
-            `lineage_definition_registry`
+            `lnge_m_definition_registry`
           SET
             is_changed = TRUE,
             analysis_status = 'FAILED',
@@ -857,7 +936,7 @@ BEGIN
         EXCEPTION WHEN ERROR THEN
           IF replacement_started THEN
           DELETE FROM
-            `lineage_direct_dependency`
+            `lnge_t_direct_dependency`
           WHERE LOWER(target_project) = LOWER(target.object_project)
             AND LOWER(target_dataset) = LOWER(target.object_dataset)
             AND LOWER(target_object) = LOWER(target.object_name)
@@ -865,25 +944,25 @@ BEGIN
             AND generation_type = target.generation_type;
 
           INSERT INTO
-            `lineage_direct_dependency`
+            `lnge_t_direct_dependency`
           SELECT *
           FROM previous_direct_dependency;
 
           DELETE FROM
-            `lineage_diagnostic`
+            `lnge_t_diagnostic`
           WHERE LOWER(object_project) = LOWER(target.object_project)
             AND LOWER(object_dataset) = LOWER(target.object_dataset)
             AND LOWER(object_name) = LOWER(target.object_name)
             AND object_type = target.object_type;
 
           INSERT INTO
-            `lineage_diagnostic`
+            `lnge_t_diagnostic`
           SELECT *
           FROM previous_lineage_diagnostic;
         END IF;
 
         UPDATE
-          `lineage_definition_registry`
+          `lnge_m_definition_registry`
         SET
           is_changed = TRUE,
           analysis_status = 'FAILED',
@@ -896,7 +975,7 @@ BEGIN
           AND definition_hash = target.definition_hash;
 
         INSERT INTO
-          `lineage_diagnostic`
+          `lnge_t_diagnostic`
         (
           definition_hash,
           object_project,
@@ -974,19 +1053,19 @@ BEGIN
       (
         SELECT COUNT(*)
         FROM
-          `lineage_definition_registry`
+          `lnge_m_definition_registry`
         WHERE is_active = TRUE
           AND is_changed = TRUE
       ) AS remaining_changed_object_count,
       (
         SELECT COUNT(*)
         FROM
-          `lineage_direct_dependency`
+          `lnge_t_direct_dependency`
       ) AS direct_dependency_count,
       (
         SELECT COUNT(*)
         FROM
-          `lineage_diagnostic`
+          `lnge_t_diagnostic`
         WHERE severity = 'ERROR'
       ) AS error_diagnostic_count;
   END;

@@ -5,6 +5,85 @@ Claude Code セッション（会話の記憶を持たない）へ引き継ぐ�
 「何を・なぜ」を残しています。実装の要約は `CHANGELOG.md`、規約は `CLAUDE.md` /
 `docs/DEVELOPMENT_GUIDE.md` を参照してください。
 
+---
+
+## 0. 直近セッションからの引き継ぎ（リポジトリ移行用・2026-08-22 時点）
+
+> **目的**：本ソースの管理リポジトリを別リポジトリへ移すため、次セッションが迷わず
+> 続けられるよう現状を1か所にまとめる。以降の §1〜 は 1.5.0-032 の設計経緯（履歴）で、
+> 一部に**古い変数名**が残る（下記「命名の変更」を最優先で参照）。
+
+### 0.1 いまの状態（事実）
+- バージョン: **1.5.0-032**。作業ブランチ: `claude/direct-file-visibility-check-6qztqm`
+  （旧リポジトリ `audeoinc/audeo-share`、ディレクトリ `lineage/`）。
+- バンドル: `javascript/dist/lineage_udf_bundle.js`
+  `sha256 = ad18b4bc5a015e9d831900d5ca6edfde4043b3c5ccb9fc71a6940e0e24ad00cf`、`461888` bytes。
+- テスト: `test:release` 52 本 PASS / ゴールデン（`test_v1_5_0_003`）48 ケース PASS。
+- 作業ツリーはクリーン（未コミットなし）。全コミットは上記ブランチに push 済み。
+- **BigQuery 実機での実行検証は未実施**（このセッションはオフライン。ユーザーが実機で
+  逐次確認しながら不具合を報告→修正、を繰り返した）。
+
+### 0.2 リポジトリ移行時の作業（次セッションの最初にやること）
+1. 新リポジトリに `lineage/` 一式（`javascript/`・`sql/`・`docs/`・`CLAUDE.md`・
+   `CHANGELOG.md`・`release_manifest.json` 等）を配置。**`javascript/dist/` の
+   バンドルも必ず含める**（`release_manifest.json` の sha256/size と一致していること）。
+2. 移行後にまず健全性確認：`cd javascript && npm test`（build→verify:bundle→test:release）
+   と `node test/test_v1_5_0_003.js`。上記の PASS 本数・sha256 を再現できれば移行成功。
+3. `CLAUDE.md` はセッション開始時に自動読込される運用（新リポジトリでも同じ場所に置く）。
+4. 新しいブランチ運用・PR 先は新リポジトリの規約に合わせる。旧ブランチ名に依存しない。
+
+### 0.3 デプロイ時の必須注意（エンジンを変更しているため）
+- 本セッションで **JS エンジン（`javascript/src`）を変更**した。デプロイ時は
+  **GCS 上の `lineage_udf_bundle.js` を再アップロード**すること（`sql/` のみの変更なら
+  不要だが、今回はバンドルが変わっている）。GCS URI は 01/04 の `*_udf_library_uri`。
+- エンジン変更手順（厳守）: `src/` 変更 → `node scripts/build_udf.js` → 全テスト →
+  `release_manifest.json` の sha256/size 更新 → GCS 再アップロード。
+
+### 0.4 このセッションで入れた変更（新しい順・各1行）
+- `e829e2c` 無型 STRUCT のフィールド別名 `STRUCT(expr AS name,...)` を式パーサで消費
+  （UNNEST/WHERE 等の非復旧位置で `expected ")" but found "AS"` になっていた DAG SQL を修正）。
+  併せて式パーサのエラーに `at line/column (token_seq) near: …` を付与（診断で位置特定可能に）。
+  test 071/072。
+- `0d44f65` FROM サブクエリが `WITH` / セット演算（`INTERSECT DISTINCT` 等）で始まる形を許可。test 070。
+- `db02ef4` 03 の列メタ union の `SELECT *` を明示列に変更（データセット毎に
+  INFORMATION_SCHEMA.COLUMNS の列数が異なり UNION ALL 不一致になる問題）。SQL のみ。
+- `3972557` `{project_token}` を UDF ライブラリ URI でも置換（01/04 の抜け漏れ修正）＋
+  dataset 名/URI に残留プレースホルダ・不正文字の早期 ASSERT を全スクリプトに追加。
+- `3596427` 01 の setup summary（step 7）に `project_id` / `project_token` を表示。
+- `0774298` 全スクリプトの `[A]` グループ順を 03 に統一＋命名ノブ（project_token/udf prefix/suffix）を `[A]` へ。
+- `52c12e6` **03 の対象フィルタを2系統へ統合**（レジストリ＝解析対象）。下記「命名の変更」参照。
+- `aa41e98` 自動取得の `default_project_id`（01/04 は `bootstrap_default_project_id`）の DECLARE を `[A]`→`[B]` へ。
+- `117cc84`/`54ae2b4` `[A]` を「グループ見出し＋Variable notes」構成に統一（全スクリプト）。
+- `26c626d`/`1ab9054` `{project_token}` 置換の導入、UDF 名 prefix/suffix 化、project_id 自動取得（SCHEMATA）。
+- `c79d09f`/`ec5ce92` 全テーブル/ビュー/UDF に `lnge_` prefix、ソース zip 更新。
+
+### 0.5 命名の変更（重要・§3 等の古い記述を上書きする）
+- 03 の**対象フィルタは2系統に統合済み**。以前の
+  `target_dataset_include/exclude_patterns`（走査範囲）と
+  `registry_exclude_object/dataset_patterns`（収集除外）は**廃止**。現在は:
+  - `analysis_include/exclude_dataset_patterns` … dataset スコープ（View 走査範囲＋
+    生成テーブルの dataset ゲート）
+  - `analysis_include/exclude_object_patterns` … object 名フィルタ（**収集時**に適用）
+  - 両者は STEP1/STEP2（収集）で適用し、通ったものだけがレジストリ＝解析対象。除外分は
+    登録も変更追跡もされない（orphan cleanup が deactivate）。解析段でのフィルタ再適用は撤去。
+  - `source_project_filters` は別軸（参照される物理テーブルの schema 取得範囲）で不変。
+  - 09 のレポートスコープも `target_dataset_*` → `analysis_*_dataset` に改名。
+- したがって **本ドキュメント §3 の `target_dataset_*` / `registry_exclude_*` の記述は歴史的経緯**
+  として読むこと（現行の変数は上記）。CLAUDE.md §6 は最新に更新済み。
+
+### 0.6 既知のパース・ギャップの直し方（DAG 生成 SQL 対応のパターン）
+実機の DAG ジョブ SQL で未対応構文に当たると、03 の **source-discovery パス**は既定
+（strict/throw）なので解析が落ちる（解析パスの non-strict 復旧とは別物）。今回対応したのは:
+1. `FROM (WITH … / (…) UNION|INTERSECT|EXCEPT …)` → from_parser のサブクエリ入口ガード緩和。
+2. 無型 `STRUCT(expr AS name)` → 式パーサの STRUCT 引数で任意 `AS <name>` を消費。
+- 次に別の未対応構文が出たら、まず**式パーサのエラーメッセージ**（`near: …` 付き）で
+  箇所を特定 → `javascript/dist` を使った node 再現スクリプトを書く（**options は `"{}"`
+  ＝throw モードで再現する。`strict_mode:false` だと復旧して再現しないので注意**）→
+  該当 parser を修正 → `test_v1_5_0_0XX` 追加 → 再ビルド → manifest/CHANGELOG 更新。
+- 再現の呼び出し例:
+  `analyzeLineageForBigQuery(sql, JSON.stringify(cols), "{}", JSON.stringify({analysis_id,view_project,view_dataset,view_name,analyzed_at}))`
+  （`cols` は `[{table_name:"ds.t",column_name:"c",field_path:"c"}]` 形式）。
+
 ## 1. このバージョンで確定した方針
 
 - **環境識別子の除去**：全ファイルの実名（旧 `audeodb` / `sample_ds` 等）を
@@ -34,7 +113,7 @@ Claude Code セッション（会話の記憶を持たない）へ引き継ぐ�
   判定は「**宛先が実在し、かつ table expiration が無い**もののみ永続」。それ以外
   （非実在 or expiration 付き）は ephemeral として合成ラベル
   `<target_project>.<ephemeral_object_dataset_label>.fp_<hash>` に集約。
-- 実装：`fingerprint_lineage_sql` UDF（01）と `fingerprintSqlForBigQuery`（エンジン）。
+- 実装：`lnge_fingerprint_sql` UDF（01）と `fingerprintSqlForBigQuery`（エンジン）。
   文字列/数値リテラルを `?` に置換し構造だけを比較（リテラル差のみの SQL は同一指紋）。
 
 ## 3. フィルタ/リージョンまわりの整理
@@ -62,7 +141,7 @@ Claude Code セッション（会話の記憶を持たない）へ引き継ぐ�
   name-include かつ dataset-include を満たし、name-exclude・dataset-exclude の
   いずれにも当たらない object を解析）。マッチは既存同様
   `REGEXP_CONTAINS(LOWER(値), LOWER(pattern))`（大文字小文字無視）。
-- 冗長変数の整理：`render_dynamic_sql` の未使用プレースホルダ `__REPOSITORY__` /
+- 冗長変数の整理：`lnge_render_dynamic_sql` の未使用プレースホルダ `__REPOSITORY__` /
   `__TARGET__` と、それだけのために存在した `target_dataset` スカラーを撤去
   （現在は 8 プレースホルダ / 9 パラメータ）。
 
@@ -353,7 +432,7 @@ Claude Code セッション（会話の記憶を持たない）へ引き継ぐ�
 
 ## 5. 現在地（引き継ぎ時点）
 
-- バンドル: `sha256 = 0a31b8c9a86faae55f8108e94b7a237906add0e96da6cd6b823f026371a8e3c5`、`441569` bytes
+- バンドル: `sha256 = 37aec3cd5cb25d8bb4cf8a6975bc6e1c34ba67ee3f352527e05137b8781a2b7b`、`459728` bytes
 - `test:release` 41 本 PASS / ゴールデン 48 ケース PASS
 - 二本ツリー（-031 / -032）同期済み
 - 03 STEP 3：フルバッチ化済み（上記 §4.5 ①②③）。集合ベースに全面置換、ジョブ数は

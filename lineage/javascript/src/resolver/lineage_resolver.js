@@ -855,7 +855,11 @@ class LineageResolver {
     const noPhysicalDependencyStatuses = new Set([
       "PSEUDO_COLUMN_RESOLVED",
       "UNNEST_OFFSET",
-      "UNNEST_CONSTANT"
+      "UNNEST_CONSTANT",
+      // EXTERNAL_QUERY など FROM 位置のテーブル値関数の出力列。外部/フェデレー
+      // テッドソース由来で BigQuery 物理列を持たない正当な終端値。未解決ではなく
+      // 定数同様の RESOLVED として扱い、物理エッジも警告も生まない。
+      "EXTERNAL_SOURCE_RESOLVED"
     ]);
 
     if (noPhysicalDependencyStatuses.has(

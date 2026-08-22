@@ -18,7 +18,7 @@
 -- ============================================================================
 SET @@location = 'asia-northeast1';
 
-CREATE TEMP FUNCTION render_dynamic_sql(
+CREATE TEMP FUNCTION lnge_render_dynamic_sql(
   sql_template STRING,
   target_project_id STRING,
   target_dataset STRING,
@@ -43,16 +43,58 @@ BEGIN
   -- ==========================================================================
   -- Runtime environment settings
   -- ==========================================================================
-  DECLARE target_project_id STRING DEFAULT 'project_id';
+  -- --------------------------------------------------------------------------
+  -- [A] REQUIRED per deployment / region -- set these
+  -- --------------------------------------------------------------------------
+  -- Variables are grouped by purpose below; each group is labeled with a one-line
+  -- header. Full descriptions follow the block under "Variable notes".
+  -- GCP project: auto-detected at runtime; its DECLARE lives in [B] (pin it there
+  -- only to run against a different project).
+  -- Project-token substitution
+  DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
+  -- Region, target VIEW & datasets
+  DECLARE job_region STRING DEFAULT 'asia-northeast1';
   DECLARE target_dataset STRING DEFAULT 'dataset';
   DECLARE target_view_name STRING DEFAULT 'v_customer_sales_cost_sample';
-  DECLARE job_region STRING DEFAULT 'asia-northeast1';
-  DECLARE udf_project_id STRING DEFAULT 'project_id';
   DECLARE udf_dataset STRING DEFAULT 'dataset';
-  DECLARE udf_function_name STRING DEFAULT 'analyze_lineage_json';
+  -- UDF naming (prefix / suffix)
+  DECLARE udf_name_prefix STRING DEFAULT '';
+  DECLARE udf_name_suffix STRING DEFAULT '';
+  --
+  -- Variable notes (keyed by name):
+  --   project_token_pattern
+  --     Project-token substitution regex (keep in step with 01). A token extracted
+  --     from the auto-detected project id replaces every '{project_token}'
+  --     placeholder in the dataset names and udf prefix/suffix. Default: first
+  --     hyphen segment.
+  --   job_region / target_dataset / target_view_name / udf_dataset
+  --     Region (must equal @@location) and the single VIEW to analyze.
+  --   udf_name_prefix / udf_name_suffix
+  --     Analysis UDF name: assembled in [C] as udf_prefix + 'lnge_' + base +
+  --     udf_suffix (must match 01). Routine names allow only letters/digits/'_'
+  --     (no '-').
+
+  -- --------------------------------------------------------------------------
+  -- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
+  -- --------------------------------------------------------------------------
+  -- GCP project. Declared here (not in [A]) because it is normally not set by hand:
+  -- it is auto-detected in [C] from INFORMATION_SCHEMA.SCHEMATA (the project the job
+  -- runs in). To pin it, set a literal in [C]. Target and UDFs share one project;
+  -- the role-specific *_project_id variables live in [C] and take this.
+  DECLARE default_project_id STRING;
+  -- Analysis UDF function name: assembled in [C] from the udf prefix/suffix in [A]
+  -- (must match 01). Routine names allow only letters/digits/'_' (no '-').
+  DECLARE udf_function_name STRING;
   DECLARE parser_strict_mode BOOL DEFAULT FALSE;
   DECLARE compact_export BOOL DEFAULT TRUE;
 
+  -- --------------------------------------------------------------------------
+  -- [C] DERIVED / INTERNAL -- from [A]; DO NOT edit
+  -- --------------------------------------------------------------------------
+  -- Role-specific projects take default_project_id (auto-detected below); pin a
+  -- line to a literal only if that role's objects live in a separate project.
+  DECLARE target_project_id STRING DEFAULT NULL;
+  DECLARE udf_project_id STRING DEFAULT NULL;
   DECLARE sql_template STRING;
   DECLARE rendered_sql STRING;
   DECLARE view_definition STRING;
@@ -64,6 +106,37 @@ BEGIN
   DECLARE analysis_id STRING DEFAULT GENERATE_UUID();
   DECLARE analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
   DECLARE analysis_status STRING;
+  -- Token extracted from the project id (see project_token_pattern).
+  DECLARE project_token STRING;
+
+  -- Auto-detect the running GCP project from INFORMATION_SCHEMA.SCHEMATA
+  -- (catalog_name). Region-qualified identifier built from @@location; to pin the
+  -- project, replace this SET with a literal. Roles take it unless pinned.
+  EXECUTE IMMEDIATE FORMAT(
+    "SELECT DISTINCT catalog_name FROM `region-%s`.INFORMATION_SCHEMA.SCHEMATA LIMIT 1",
+    @@location
+  ) INTO default_project_id;
+  ASSERT default_project_id IS NOT NULL AS
+    'Could not auto-detect the project id from INFORMATION_SCHEMA.SCHEMATA; set default_project_id to a literal.';
+  SET target_project_id = COALESCE(target_project_id, default_project_id);
+  SET udf_project_id = COALESCE(udf_project_id, default_project_id);
+  -- Project-token substitution in the name inputs (before names are used).
+  SET project_token =
+    COALESCE(REGEXP_EXTRACT(default_project_id, project_token_pattern), '');
+  SET target_dataset = REPLACE(target_dataset, '{project_token}', project_token);
+  SET udf_dataset = REPLACE(udf_dataset, '{project_token}', project_token);
+  SET udf_name_prefix = REPLACE(udf_name_prefix, '{project_token}', project_token);
+  SET udf_name_suffix = REPLACE(udf_name_suffix, '{project_token}', project_token);
+
+  -- Guard: an unsubstituted '{project_token}' (or any invalid character) in a dataset
+  -- name is surfaced here instead of failing later at DDL time.
+  ASSERT REGEXP_CONTAINS(target_dataset, r'^[A-Za-z0-9_]+$')
+    AS 'target_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+  ASSERT REGEXP_CONTAINS(udf_dataset, r'^[A-Za-z0-9_]+$')
+    AS 'udf_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+
+  SET udf_function_name =
+    udf_name_prefix || 'lnge_' || 'analyze_json' || udf_name_suffix;
 
   ASSERT @@location = job_region
   AS '@@location and job_region must be identical.';
@@ -91,7 +164,7 @@ BEGIN
     WHERE LOWER(table_name) = LOWER(@target_view_name)
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = lnge_render_dynamic_sql(
     sql_template,
     target_project_id,
     target_dataset,
@@ -127,7 +200,7 @@ BEGIN
     FROM `__TARGET__.INFORMATION_SCHEMA.COLUMNS`
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = lnge_render_dynamic_sql(
     sql_template,
     target_project_id,
     target_dataset,
@@ -147,7 +220,7 @@ BEGIN
     FROM `__TARGET__.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS`
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = lnge_render_dynamic_sql(
     sql_template,
     target_project_id,
     target_dataset,
@@ -173,7 +246,7 @@ BEGIN
     )
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = lnge_render_dynamic_sql(
     sql_template,
     target_project_id,
     target_dataset,
@@ -324,7 +397,7 @@ BEGIN
     )
   """;
 
-  SET rendered_sql = render_dynamic_sql(
+  SET rendered_sql = lnge_render_dynamic_sql(
     sql_template,
     target_project_id,
     target_dataset,

@@ -12,29 +12,72 @@ SET @@location = 'asia-northeast1';
 -- lineage_config table; the checks below compare the live repository against
 -- these expected values.
 -- ============================================================================
-DECLARE bootstrap_repository_project_id STRING DEFAULT 'project_id';
+-- ----------------------------------------------------------------------------
+-- [A] REQUIRED per deployment / region -- set these
+-- ----------------------------------------------------------------------------
+-- Variables are grouped by purpose below; each group is labeled with a one-line
+-- header. Full descriptions follow the block under "Variable notes".
+-- GCP project: auto-detected at runtime; its DECLARE lives in [B] (pin it there
+-- only to run against a different project).
+-- Project-token substitution
+DECLARE bootstrap_project_token_pattern STRING DEFAULT r'^([^-]+)';
+-- Datasets (repository / UDF)
 DECLARE bootstrap_repository_dataset STRING DEFAULT 'lineage_repository';
-DECLARE bootstrap_repository_location STRING DEFAULT 'asia-northeast1';
-
-DECLARE bootstrap_udf_project_id STRING DEFAULT 'project_id';
 DECLARE bootstrap_udf_dataset STRING DEFAULT 'dataset';
-DECLARE bootstrap_udf_function_name STRING DEFAULT 'analyze_lineage_json';
+-- UDF naming (prefix / suffix)
+DECLARE bootstrap_udf_name_prefix STRING DEFAULT '';
+DECLARE bootstrap_udf_name_suffix STRING DEFAULT '';
+-- UDF JS bundle location (GCS)
 DECLARE bootstrap_udf_library_uri STRING DEFAULT
   'gs://YOUR_BUCKET/YOUR_PATH/lineage_udf_bundle.js';
+--
+-- Variable notes (keyed by name):
+--   bootstrap_project_token_pattern
+--     Project-token substitution regex (keep in step with 01). A token extracted
+--     from the auto-detected project id replaces every '{project_token}' placeholder
+--     in the dataset names and udf prefix/suffix. Default: first hyphen-delimited
+--     segment.
+--   bootstrap_repository_dataset / bootstrap_udf_dataset
+--     Repository dataset and UDF dataset (their *_project_id are in [C]).
+--   bootstrap_udf_name_prefix / bootstrap_udf_name_suffix
+--     Analysis UDF name: assembled in [C] as udf_prefix + 'lnge_' + base +
+--     udf_suffix (keep in step with 01). Routine names allow only letters/digits/'_'
+--     (no '-').
+--   bootstrap_udf_library_uri
+--     GCS URI of the uploaded lineage_udf_bundle.js (deployment-specific).
 
-DECLARE bootstrap_target_project_id STRING DEFAULT 'project_id';
-DECLARE bootstrap_target_region STRING DEFAULT 'asia-northeast1';
+-- ----------------------------------------------------------------------------
+-- [B] BEHAVIOR OPTIONS -- keep aligned with 01 / 03; defaults are safe
+-- ----------------------------------------------------------------------------
+-- Single source of truth for the GCP project. Declared here (not in [A]) because
+-- it is normally not set by hand: it is auto-detected in [C] from
+-- INFORMATION_SCHEMA.SCHEMATA (the project the job runs in). To pin it, set a
+-- literal in [C]. The repository, the UDFs, and the target all live in this one
+-- project; the role-specific bootstrap_*_project_id variables live in [C] and take
+-- this.
+DECLARE bootstrap_default_project_id STRING;
+-- Analysis UDF function name: assembled in [C] from the udf prefix/suffix in [A]
+-- (keep in step with 01). Routine names allow only letters/digits/'_' (no '-').
+DECLARE bootstrap_udf_function_name STRING;
 DECLARE bootstrap_target_datasets ARRAY<STRING> DEFAULT ['dataset'];
-
 DECLARE bootstrap_parser_strict_mode BOOL DEFAULT FALSE;
 DECLARE bootstrap_compact_export BOOL DEFAULT TRUE;
 DECLARE bootstrap_max_impact_rank INT64 DEFAULT 100;
 
-DECLARE repository_dataset_full_name STRING DEFAULT FORMAT(
-  '%s.%s',
-  bootstrap_repository_project_id,
-  bootstrap_repository_dataset
-);
+-- ----------------------------------------------------------------------------
+-- [C] DERIVED / INTERNAL -- computed from [A] or @@location; DO NOT edit
+-- ----------------------------------------------------------------------------
+-- Role-specific projects take bootstrap_default_project_id (auto-detected below);
+-- pin a line to a literal only if that role's objects live in a separate project.
+-- The repository / target regions mirror @@location (single source of truth).
+DECLARE bootstrap_repository_project_id STRING DEFAULT NULL;
+DECLARE bootstrap_repository_location STRING DEFAULT @@location;
+DECLARE bootstrap_udf_project_id STRING DEFAULT NULL;
+DECLARE bootstrap_target_project_id STRING DEFAULT NULL;
+DECLARE bootstrap_target_region STRING DEFAULT @@location;
+
+-- Assembled after the project is auto-detected (see the SET block below).
+DECLARE repository_dataset_full_name STRING;
 
 DECLARE validation_started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
 DECLARE sample_dataset STRING;
@@ -42,6 +85,61 @@ DECLARE sample_dataset_full_name STRING;
 DECLARE udf_full_name STRING;
 DECLARE smoke_test_result STRING;
 DECLARE smoke_test_status STRING;
+-- Token extracted from the project id (see bootstrap_project_token_pattern).
+DECLARE bootstrap_project_token STRING;
+
+-- Auto-detect the running GCP project from INFORMATION_SCHEMA.SCHEMATA
+-- (catalog_name). Region-qualified identifier built from @@location; to pin the
+-- project, replace this SET with a literal. Roles take it unless pinned.
+EXECUTE IMMEDIATE FORMAT(
+  "SELECT DISTINCT catalog_name FROM `region-%s`.INFORMATION_SCHEMA.SCHEMATA LIMIT 1",
+  @@location
+) INTO bootstrap_default_project_id;
+ASSERT bootstrap_default_project_id IS NOT NULL AS
+  'Could not auto-detect the project id from INFORMATION_SCHEMA.SCHEMATA; set bootstrap_default_project_id to a literal.';
+SET bootstrap_repository_project_id =
+  COALESCE(bootstrap_repository_project_id, bootstrap_default_project_id);
+SET bootstrap_udf_project_id =
+  COALESCE(bootstrap_udf_project_id, bootstrap_default_project_id);
+SET bootstrap_target_project_id =
+  COALESCE(bootstrap_target_project_id, bootstrap_default_project_id);
+-- Project-token substitution in the name inputs (before FQN / UDF assembly).
+SET bootstrap_project_token =
+  COALESCE(REGEXP_EXTRACT(bootstrap_default_project_id, bootstrap_project_token_pattern), '');
+SET bootstrap_repository_dataset =
+  REPLACE(bootstrap_repository_dataset, '{project_token}', bootstrap_project_token);
+SET bootstrap_udf_dataset =
+  REPLACE(bootstrap_udf_dataset, '{project_token}', bootstrap_project_token);
+SET bootstrap_udf_name_prefix =
+  REPLACE(bootstrap_udf_name_prefix, '{project_token}', bootstrap_project_token);
+SET bootstrap_udf_name_suffix =
+  REPLACE(bootstrap_udf_name_suffix, '{project_token}', bootstrap_project_token);
+SET bootstrap_udf_library_uri =
+  REPLACE(bootstrap_udf_library_uri, '{project_token}', bootstrap_project_token);
+SET bootstrap_target_datasets = ARRAY(
+  SELECT REPLACE(d, '{project_token}', bootstrap_project_token)
+  FROM UNNEST(bootstrap_target_datasets) AS d
+);
+
+-- Guard: surface an unsubstituted '{project_token}' (or invalid character) in a name
+-- input here, not at DDL time. Dataset names must be valid identifiers; the GCS
+-- library URI is not an identifier, so it is only checked for a leftover placeholder.
+ASSERT REGEXP_CONTAINS(bootstrap_repository_dataset, r'^[A-Za-z0-9_]+$')
+  AS 'bootstrap_repository_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+ASSERT REGEXP_CONTAINS(bootstrap_udf_dataset, r'^[A-Za-z0-9_]+$')
+  AS 'bootstrap_udf_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+ASSERT NOT EXISTS (
+  SELECT 1 FROM UNNEST(bootstrap_target_datasets) AS d
+  WHERE NOT REGEXP_CONTAINS(d, r'^[A-Za-z0-9_]+$')
+) AS 'Each bootstrap_target_datasets entry must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+ASSERT STRPOS(bootstrap_udf_library_uri, '{project_token}') = 0
+  AS 'bootstrap_udf_library_uri still contains {project_token}; check bootstrap_project_token_pattern.';
+
+SET repository_dataset_full_name = FORMAT(
+  '%s.%s', bootstrap_repository_project_id, bootstrap_repository_dataset
+);
+SET bootstrap_udf_function_name =
+  bootstrap_udf_name_prefix || 'lnge_' || 'analyze_json' || bootstrap_udf_name_suffix;
 
 CREATE TEMP TABLE validation_result
 (
@@ -82,6 +180,8 @@ SET udf_full_name = FORMAT(
 -- ============================================================================
 -- 2. Configuration integrity
 -- ============================================================================
+-- Both region values now derive from @@location, so this check is structurally
+-- guaranteed to PASS; it is kept to surface the resolved region in the report.
 INSERT INTO validation_result
 SELECT
   20,
@@ -122,11 +222,11 @@ SELECT
 -- ============================================================================
 BEGIN
   DECLARE required_tables ARRAY<STRING> DEFAULT [
-    'lineage_definition_registry',
-    'lineage_direct_dependency',
-    'lineage_impact',
-    'lineage_diagnostic',
-    'lineage_job_registry'
+    'lnge_m_definition_registry',
+    'lnge_t_direct_dependency',
+    'lnge_t_impact',
+    'lnge_t_diagnostic',
+    'lnge_m_job_registry'
   ];
 
   FOR required_table IN (
@@ -418,7 +518,7 @@ BEGIN
         is_active = TRUE
         AND analysis_status = 'FAILED'
       )
-    FROM `%s.lineage_definition_registry`
+    FROM `%s.lnge_m_definition_registry`
     ''',
     repository_dataset_full_name
   )
@@ -464,7 +564,7 @@ BEGIN
     IF(failed_count = 0, 'PASS', 'FAIL'),
     '0',
     CAST(failed_count AS STRING),
-    'Inspect lineage_diagnostic for failed objects.',
+    'Inspect lnge_t_diagnostic for failed objects.',
     CURRENT_TIMESTAMP()
   );
 END;
@@ -484,7 +584,7 @@ BEGIN
       COUNT(*),
       COUNTIF(target_dataset = @sample_dataset),
       COUNTIF(edge_key IS NULL OR edge_key = '')
-    FROM `%s.lineage_direct_dependency`
+    FROM `%s.lnge_t_direct_dependency`
     ''',
     repository_dataset_full_name
   )
@@ -499,7 +599,7 @@ BEGIN
     SELECT COUNT(*)
     FROM (
       SELECT edge_key
-      FROM `%s.lineage_direct_dependency`
+      FROM `%s.lnge_t_direct_dependency`
       GROUP BY edge_key
       HAVING COUNT(*) > 1
     )
@@ -598,7 +698,7 @@ BEGIN
     )
     SELECT COUNT(*)
     FROM expected_edges AS expected
-    JOIN `%s.lineage_direct_dependency` AS actual
+    JOIN `%s.lnge_t_direct_dependency` AS actual
       ON actual.source_dataset = @sample_dataset
      AND actual.target_dataset = @sample_dataset
      AND actual.source_object = expected.source_object
@@ -639,7 +739,7 @@ BEGIN
       COUNT(*),
       COALESCE(MAX(impact_rank), 0),
       COUNTIF(is_cycle)
-    FROM `%s.lineage_impact`
+    FROM `%s.lnge_t_impact`
     ''',
     repository_dataset_full_name
   )
@@ -651,7 +751,7 @@ BEGIN
   EXECUTE IMMEDIATE FORMAT(
     '''
     SELECT COUNT(*)
-    FROM `%s.lineage_impact`
+    FROM `%s.lnge_t_impact`
     WHERE origin_dataset = @sample_dataset
       AND origin_object IN (
         'customers',
@@ -675,7 +775,7 @@ BEGIN
     IF(impact_count > 0, 'PASS', 'FAIL'),
     'greater than 0',
     CAST(impact_count AS STRING),
-    'The daily pipeline must rebuild lineage_impact.',
+    'The daily pipeline must rebuild lnge_t_impact.',
     CURRENT_TIMESTAMP()
   );
 
@@ -741,7 +841,7 @@ BEGIN
     SELECT
       COUNTIF(severity = 'ERROR'),
       COUNTIF(severity = 'WARNING')
-    FROM `%s.lineage_diagnostic`
+    FROM `%s.lnge_t_diagnostic`
     ''',
     repository_dataset_full_name
   )

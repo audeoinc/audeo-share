@@ -32,6 +32,7 @@ Generated: 2026-07-28
 - `javascript/README.md`
 - `javascript/VERSION`
 - `sql/bigquery/create_persistent_lineage_udf.sql`
+- `sql/bigquery/create_render_dynamic_sql_udf.sql`
 - `sql/bigquery/test_persistent_lineage_udf.sql`
 - `javascript/dist/lineage_udf_bundle.js`
 - `javascript/package.json`
@@ -196,6 +197,8 @@ Generated: 2026-07-28
 - `looker/README.md`
 - `sql/maintenance/06_analyze_changed_objects.sql`
 - `sql/maintenance/07_run_single_view_analysis.sql`
+- `sql/maintenance/08_view_last_access.sql`
+- `sql/maintenance/09_unanalyzed_object_definitions.sql`
 - `sql/pipeline/03_run_daily_lineage_pipeline.sql`
 - `sql/sample/02_setup_sample_environment.sql`
 - `sql/sample/02a_create_cost_measurement_view.sql`

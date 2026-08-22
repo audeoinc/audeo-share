@@ -4,127 +4,66 @@
 -- ============================================================================
 -- IMPORTANT:
 -- @@location must be set before statements that access BigQuery resources.
--- Keep this value equal to job_region below.
+-- This is the single source of truth for the pipeline region: job_region below
+-- is declared as DEFAULT @@location, so set the region only here.
 SET @@location = 'asia-northeast1';
 
 -- ============================================================================
 -- Common dynamic SQL renderer
 -- ============================================================================
--- Only SQL identifiers are replaced here.
--- Runtime values must continue to be passed with EXECUTE IMMEDIATE ... USING.
-CREATE TEMP FUNCTION render_dynamic_sql(
-  sql_template STRING,
-  repository_project_id STRING,
-  repository_dataset STRING,
-  target_project_id STRING,
-  job_region STRING,
-  udf_project_id STRING,
-  udf_dataset STRING,
-  udf_function_name STRING,
-  repo_tables STRUCT<
-    def_registry STRING,
-    direct_dep STRING,
-    impact STRING,
-    diagnostic STRING,
-    job_registry STRING
-  >
-)
-RETURNS STRING
-AS (
-  -- Repository-table placeholders expand to the fully qualified
-  -- repository_project.repository_dataset.<physical_table_name>, mirroring the
-  -- __UDF__ placeholder. Physical table names are configured in the
-  -- declaration block so that environment-specific naming rules can be applied
-  -- without editing the body of the script.
-  REPLACE(
-  REPLACE(
-  REPLACE(
-    REPLACE(
-      REPLACE(
-        REPLACE(
-          REPLACE(
-            REPLACE(
-              sql_template,
-              '__TARGET_PROJECT__',
-              target_project_id
-        ),
-        '__JOB_REGION__',
-        job_region
-      ),
-      '__UDF__',
-      udf_project_id || '.' || udf_dataset || '.' || udf_function_name
-    ),
-    '__T_DEF_REGISTRY__',
-    repository_project_id || '.' || repository_dataset || '.'
-      || repo_tables.def_registry
-  ),
-    '__T_DIRECT_DEP__',
-    repository_project_id || '.' || repository_dataset || '.'
-      || repo_tables.direct_dep
-  ),
-    '__T_IMPACT__',
-    repository_project_id || '.' || repository_dataset || '.'
-      || repo_tables.impact
-  ),
-    '__T_DIAGNOSTIC__',
-    repository_project_id || '.' || repository_dataset || '.'
-      || repo_tables.diagnostic
-  ),
-    '__T_JOB_REGISTRY__',
-    repository_project_id || '.' || repository_dataset || '.'
-      || repo_tables.job_registry
-  )
-);
+-- lnge_render_dynamic_sql expands the __TARGET_PROJECT__ / __JOB_REGION__ / __UDF__
+-- / __T_*__ identifier placeholders below. It is a PERSISTENT function created
+-- by 01_setup_lineage_environment.sql (redeploy with
+-- sql/bigquery/create_render_dynamic_sql_udf.sql), NOT a script TEMP FUNCTION:
+-- BigQuery prepends every script TEMP FUNCTION's DDL to the query text of every
+-- child job, which made the console's "All results" list show only that
+-- prepended TEMP FUNCTION DDL header for every statement. As a
+-- persistent function nothing is prepended, so each statement (and the per-step
+-- progress markers below) shows its own SQL.
+--
+-- It lives alongside the JavaScript UDF (lnge_analyze_json) at
+-- udf_project_id.udf_dataset. Because a static function reference cannot use a
+-- variable for its project/dataset, it is invoked through one reusable dynamic
+-- statement (render_call_sql, built once after the repo_tables block below) so
+-- the location stays DECLARE-configurable via udf_project_id / udf_dataset /
+-- udf_render_function_name. Keep the deployment location in 01 in step with
+-- those DECLAREs. Only SQL identifiers are replaced here; runtime values must
+-- continue to be passed with EXECUTE IMMEDIATE ... USING.
 
 BEGIN
 -- ============================================================================
--- Runtime environment settings
+-- CONFIGURATION (edit here)
 -- ============================================================================
--- These scalar values are intentionally defined in this script. There is no
--- lineage_config table; this pipeline is configured entirely here.
+-- This pipeline has no lineage_config table; every setting lives in this file.
+-- Settings are split into three sections so it is obvious what to touch:
+--   [A] REQUIRED per deployment / region -- review and set these every time.
+--   [B] BEHAVIOR OPTIONS -- safe to leave at the defaults; tune as needed.
+--   [C] DERIVED / INTERNAL (further below) -- values computed from [A]/[B] or
+--       resolved at runtime; DO NOT edit.
+-- The pipeline REGION is set once at `SET @@location` at the very top of this
+-- file (the single source of truth); every other project/region-specific knob is
+-- in section [A] below. When standing up a new region, copy this file and change
+-- @@location plus section [A].
 --
--- Region for the whole pipeline (repository, target Views, source metadata, and
--- JOBS are all single-region). Must equal the `SET @@location` at the top of
--- this file.
-DECLARE job_region STRING DEFAULT 'asia-northeast1';
-DECLARE repository_project_id STRING DEFAULT 'project_id';
+-- ----------------------------------------------------------------------------
+-- [A] REQUIRED per deployment / region -- set these
+-- ----------------------------------------------------------------------------
+-- Variables are grouped by purpose below; each group is labeled with a one-line
+-- header. Full descriptions follow the block under "Variable notes".
+-- GCP project: auto-detected at runtime; its DECLARE lives in [B] (pin it there
+-- only to run against a different project).
+-- Project-token substitution
+DECLARE project_token_pattern STRING DEFAULT r'^([^-]+)';
+-- Datasets (repository / UDF)
 DECLARE repository_dataset STRING DEFAULT 'lineage_repository';
-DECLARE target_project_id STRING DEFAULT 'project_id';
--- Target datasets holding the Views to analyze (single target project). These
--- are NOT listed explicitly: they are resolved at runtime by scanning the target
--- project's datasets in job_region (INFORMATION_SCHEMA.SCHEMATA) and filtering by
--- the regex patterns below. Each resolved dataset is scanned via
--- `target_project.dataset.INFORMATION_SCHEMA.VIEWS`.
---   include: empty array = every dataset in the region; otherwise keep datasets
---            whose name matches ANY include pattern.
---   exclude: empty array = exclude none; drop datasets matching ANY pattern.
--- Matching is case-insensitive (both the dataset name and the pattern are
--- lowercased before REGEXP_CONTAINS), so patterns may be written in any case.
--- Example: only "mart"/"dwh" datasets, excluding temp/test:
---   include [r'^mart_', r'^dwh_'], exclude [r'_tmp$', r'test']
-DECLARE target_dataset_include_patterns ARRAY<STRING> DEFAULT [];
-DECLARE target_dataset_exclude_patterns ARRAY<STRING> DEFAULT [];
--- Resolved at runtime from the patterns above (see the resolution block below).
-DECLARE target_datasets ARRAY<STRING>;
-DECLARE target_datasets_lower ARRAY<STRING>;
-DECLARE view_defs_union_sql STRING;
-
--- Projects that hold physical source tables, each with include/exclude
--- dataset-name regex patterns (same convention as target_dataset_*_patterns:
--- case-insensitive REGEXP_CONTAINS, multiple patterns per list),
--- because the dataset naming differs per project and some datasets must be
--- skipped (e.g. empty or inaccessible ones that would raise access-denied when
--- their COLUMNS are read). COLUMNS / COLUMN_FIELD_PATHS / TABLES are
--- dataset-scoped, so for each entry the matching same-region datasets are
--- enumerated from INFORMATION_SCHEMA.SCHEMATA and unioned. Include the target
--- project and every other project whose tables are sources; all must be in
--- job_region.
---   dataset_include_patterns : keep datasets matching ANY pattern
---                              (empty array = every dataset in the region).
---   dataset_exclude_patterns : drop datasets matching ANY pattern
---                              (empty array = exclude none).
--- Matching is case-insensitive (name and pattern are lowercased); write patterns
--- as raw strings in any case, e.g. r'^mart_'.
+DECLARE udf_dataset STRING DEFAULT 'dataset';
+-- Table naming (prefix / suffix)
+DECLARE table_name_prefix STRING DEFAULT '';
+DECLARE table_name_suffix STRING DEFAULT '';
+-- UDF naming (prefix / suffix)
+DECLARE udf_name_prefix STRING DEFAULT '';
+DECLARE udf_name_suffix STRING DEFAULT '';
+-- Physical source projects & dataset filters (source side; widest scope)
 DECLARE source_project_filters
   ARRAY<STRUCT<
     project_id STRING,
@@ -138,79 +77,136 @@ DECLARE source_project_filters
       CAST([] AS ARRAY<STRING>) AS dataset_exclude_patterns
     )
   ];
-DECLARE udf_project_id STRING DEFAULT 'project_id';
-DECLARE udf_dataset STRING DEFAULT 'dataset';
-DECLARE udf_function_name STRING DEFAULT 'analyze_lineage_json';
--- Companion fingerprint UDF (registered by 01). Used to collapse
--- structurally-identical rotating-destination JOBS (temp / ephemeral) to one
--- representative.
-DECLARE udf_fingerprint_function_name STRING DEFAULT 'fingerprint_lineage_sql';
-DECLARE parser_strict_mode BOOL DEFAULT FALSE;
-DECLARE configured_max_impact_rank INT64 DEFAULT 100;
-
--- Set FALSE to skip STEP 2 (Scheduled Query / DAG generated-table collection
--- from INFORMATION_SCHEMA.JOBS) and process only Views. STEP 1/3/4 still run.
-DECLARE process_generated_tables BOOL DEFAULT TRUE;
-
--- REGISTRY-stage (collection) exclusion. An object is NOT registered at all if
--- its NAME matches any *_object_patterns entry OR its DATASET matches any
--- *_dataset_patterns entry (exclusion is OR across the two dimensions). Views
--- are dropped in STEP 1 before entering the definition registry (an
--- already-registered View is deactivated), and generated TABLEs are dropped in
--- STEP 2 before entering the job / definition registry (name matched on the
--- destination table, dataset on the destination dataset). This is stronger than
--- the analysis_* filters below (which keep the row and only skip analysis).
--- REGEXP_CONTAINS = partial match; matching is case-insensitive (value and
--- pattern are lowercased), so write patterns as raw strings in any case. Empty
--- array = exclude nothing on that dimension.
---   object e.g. names ending in a digit and names containing "test":
---          [r'[0-9]$', r'test']
---   dataset e.g. whole staging/scratch datasets: [r'^stg_', r'_scratch$']
-DECLARE registry_exclude_object_patterns ARRAY<STRING> DEFAULT [];
-DECLARE registry_exclude_dataset_patterns ARRAY<STRING> DEFAULT [];
-
--- ANALYSIS-stage filters. Applied when selecting which registered objects (VIEWs
--- and, when process_generated_tables = TRUE, generated TABLEs) to analyze.
--- Matched objects STAY in the definition registry and keep change tracking; only
--- lineage analysis is gated. The object NAME (object_name) and the DATASET
--- (object_dataset) are filtered independently: the *_object_patterns act on the
--- name and the *_dataset_patterns act on the dataset. REGEXP_CONTAINS = partial
--- match; matching is case-insensitive (value and pattern are lowercased), so
--- write patterns as raw strings in any case, e.g. r'^stg_'. An object is analyzed
--- when it passes BOTH dimensions' include gate AND is excluded by NEITHER
--- dimension: (name-include empty OR name matches) AND (dataset-include empty OR
--- dataset matches) AND (name matches no name-exclude) AND (dataset matches no
--- dataset-exclude). Non-matching objects stay in the registry but are not
--- analyzed.
---   include: empty array = no constraint on that dimension; otherwise analyze
---            only matches (handy for scoping a run, e.g. object [r'^v_sales'] or
---            dataset [r'^mart_']).
---   exclude: empty array = exclude nothing, e.g. object [r'^stg_', r'_tmp$'] or
---            dataset [r'_staging$'].
-DECLARE analysis_include_object_patterns ARRAY<STRING> DEFAULT [];
-DECLARE analysis_exclude_object_patterns ARRAY<STRING> DEFAULT [];
+-- Analysis dataset scope (which datasets' objects to collect & analyze)
 DECLARE analysis_include_dataset_patterns ARRAY<STRING> DEFAULT [];
 DECLARE analysis_exclude_dataset_patterns ARRAY<STRING> DEFAULT [];
-
--- ----------------------------------------------------------------------------
--- STEP 2 parameters (Scheduled Query / DAG generated-table collection)
---
--- Consumed only when process_generated_tables = TRUE. Service accounts were
--- previously read from the lineage_execution_account_config table; they are now
--- declared here so the whole pipeline is configured in this single file.
---
---   scheduled_query_service_accounts : accounts that run BigQuery Scheduled
---     Queries (also gated by the scheduled_query label unless
---     require_scheduled_query_label = FALSE).
---   dag_service_accounts             : accounts that run DAG / Airflow jobs.
--- Both arrays must be non-empty (asserted in STEP 2).
--- ----------------------------------------------------------------------------
+-- Analysis object filter (which object names to collect & analyze)
+DECLARE analysis_include_object_patterns ARRAY<STRING> DEFAULT [];
+DECLARE analysis_exclude_object_patterns ARRAY<STRING> DEFAULT [];
+-- STEP 2 service accounts (generated tables)
 DECLARE scheduled_query_service_accounts ARRAY<STRING> DEFAULT [
   'project_id@appspot.gserviceaccount.com'
 ];
 DECLARE dag_service_accounts ARRAY<STRING> DEFAULT [
   'project_id@appspot.gserviceaccount.com'
 ];
+--
+-- Variable notes (keyed by name):
+--   project_token_pattern
+--     Project-token substitution. A token extracted from the auto-detected project
+--     id by this regex (REGEXP_EXTRACT; group 1 if present) replaces every literal
+--     '{project_token}' placeholder in the dataset names and the table/UDF prefixes
+--     & suffixes. E.g. project id 'mycompany-prod-123' with r'-([^-]+)-' -> 'prod',
+--     so table_name_prefix='{project_token}_' becomes 'prod_'. Keep in step with
+--     01. The default takes the first hyphen-delimited segment; an unmatched
+--     pattern yields '' and any leftover '{project_token}' fails the name ASSERTs.
+--   repository_dataset / udf_dataset
+--     Repository dataset (holds the lineage_* tables) and UDF dataset (holds the
+--     analyze / fingerprint / render functions created by 01). Both live in the
+--     project above (their *_project_id are in [C]); set the dataset names here.
+--   table_name_prefix / table_name_suffix
+--     Repository table naming. Physical table names are assembled as
+--       prefix + marker + canonical base name + suffix
+--     in the SET lines further below. The prefix and suffix change per environment
+--     (e.g. a region tag like suffix='_tky'), so they are variables here. The
+--     master/transaction marker ('m_' / 't_') rarely changes, so it is written
+--     directly as a literal in each SET line; edit that literal only when a table
+--     must be reclassified. Include any '_' separators in the prefix and suffix.
+--     Example: prefix='ope_', marker 'm_', suffix='_tky' yields
+--     ope_lnge_m_definition_registry_tky. Leave a segment empty to omit it.
+--     Allowed characters: letters, digits, '_', and '-' (every reference to these
+--     tables is backtick-quoted, so a hyphen like suffix='-tky' is safe). Dataset
+--     and UDF names still allow only letters/digits/'_' (BigQuery does not permit
+--     '-').
+--   udf_name_prefix / udf_name_suffix
+--     UDF (routine) naming. UDF names are assembled in [C] as
+--       udf_prefix + 'lnge_' + canonical base + udf_suffix
+--     and must match the names 01 setup created in udf_dataset; keep them in step
+--     with 01. Kept separate from the table prefix/suffix because routine names
+--     allow only letters/digits/'_' (no '-', unlike backtick-quoted tables); a
+--     hyphen is caught by the UDF name ASSERT in [C].
+--   source_project_filters
+--     Projects that hold physical source tables, each with include/exclude
+--     dataset-name regex patterns (same convention as the analysis_*_dataset
+--     patterns: case-insensitive REGEXP_CONTAINS, multiple patterns per list),
+--     because the dataset naming differs per project and some datasets must be
+--     skipped (e.g. empty or inaccessible ones that would raise access-denied when
+--     their COLUMNS are read). COLUMNS / COLUMN_FIELD_PATHS / TABLES are
+--     dataset-scoped, so for each entry the matching same-region datasets are
+--     enumerated from INFORMATION_SCHEMA.SCHEMATA and unioned. This is the SOURCE
+--     side (the base tables the targets read from) and is the widest scope --
+--     include the target project and every other project whose tables are sources;
+--     all must be in job_region.
+--       dataset_include_patterns : keep datasets matching ANY pattern
+--                                  (empty array = every dataset in the region).
+--       dataset_exclude_patterns : drop datasets matching ANY pattern
+--                                  (empty array = exclude none).
+--     Matching is case-insensitive (name and pattern are lowercased); write
+--     patterns as raw strings in any case, e.g. r'^mart_'.
+--   analysis_include_dataset_patterns / analysis_exclude_dataset_patterns
+--     Analysis DATASET scope, on the TARGET side (the objects being analyzed).
+--     Resolves which datasets in the target project are scanned for Views (via
+--     INFORMATION_SCHEMA.SCHEMATA -> VIEWS) and bounds the generated-table jobs to
+--     those datasets, so only objects in these datasets enter the registry and are
+--     analyzed. The registry holds exactly the analysis targets -- there is no
+--     separate "collect but do not analyze" stage.
+--       include: empty array = every dataset in the region; otherwise keep datasets
+--                whose name matches ANY include pattern.
+--       exclude: empty array = exclude none; drop datasets matching ANY pattern.
+--     Matching is case-insensitive (name and pattern are lowercased before
+--     REGEXP_CONTAINS), so patterns may be written in any case. Example: only
+--     "mart"/"dwh" datasets, excluding temp/test:
+--       include [r'^mart_', r'^dwh_'], exclude [r'_tmp$', r'test']
+--   analysis_include_object_patterns / analysis_exclude_object_patterns
+--     Analysis OBJECT-name filter, applied at collection (STEP 1 for Views, STEP 2
+--     for generated TABLEs) within the dataset scope above. Only objects whose name
+--     passes the gate enter the registry and are analyzed; excluded objects are NOT
+--     registered and NOT change-tracked (an object newly excluded by a config change
+--     is deactivated by orphan cleanup). An object is kept when (name-include empty
+--     OR name matches an include) AND (name matches no exclude). REGEXP_CONTAINS =
+--     partial match; matching is case-insensitive (value and pattern lowercased), so
+--     write patterns as raw strings in any case.
+--       include e.g. only sales views: [r'^v_sales']
+--       exclude e.g. staging/temp:     [r'^stg_', r'_tmp$']
+--   scheduled_query_service_accounts / dag_service_accounts
+--     STEP 2 service accounts (consumed only when process_generated_tables = TRUE).
+--     Previously read from the lineage_execution_account_config table; declared
+--     here so the whole pipeline is configured in this single file.
+--       scheduled_query_service_accounts : accounts that run BigQuery Scheduled
+--         Queries (also gated by the scheduled_query label unless
+--         require_scheduled_query_label = FALSE, in [B]).
+--       dag_service_accounts             : accounts that run DAG / Airflow jobs.
+--     Both arrays must be non-empty (asserted in STEP 2).
+
+-- ----------------------------------------------------------------------------
+-- [B] BEHAVIOR OPTIONS -- defaults are safe; tune as needed
+-- ----------------------------------------------------------------------------
+-- Single source of truth for the GCP project. Declared here (not in [A]) because
+-- it is normally not set by hand: it is auto-detected in [C] from
+-- INFORMATION_SCHEMA.SCHEMATA (the project the job runs in). To pin it, set a
+-- literal in [C]. The repository, the analyzed Views (target), and the UDFs all
+-- live in this one project; the role-specific *_project_id variables (repository /
+-- target / udf) live in [C] and take this, pinned individually only in the rare
+-- case their objects live in a separate project. (Physical source tables can span
+-- projects and are configured separately via source_project_filters in [A].)
+DECLARE default_project_id STRING;
+-- UDF function names. Assembled in [C] as udf_prefix + 'lnge_' + base + udf_suffix
+-- from the udf_name_prefix / udf_name_suffix in [A]; they must match the names 01
+-- setup created in udf_dataset. Routine names allow only letters/digits/'_' (no '-';
+-- asserted in [C]). The three functions are the main analysis UDF, the structural-
+-- fingerprint UDF (collapses rotating-destination temp/ephemeral JOBS), and the
+-- dynamic-SQL renderer (invoked via render_call_sql so its location stays
+-- DECLARE-configurable).
+DECLARE udf_function_name STRING;
+DECLARE udf_fingerprint_function_name STRING;
+DECLARE udf_render_function_name STRING;
+-- Parser strictness and the maximum impact rank retained by STEP 4.
+DECLARE parser_strict_mode BOOL DEFAULT FALSE;
+DECLARE configured_max_impact_rank INT64 DEFAULT 100;
+
+-- Set FALSE to skip STEP 2 (Scheduled Query / DAG generated-table collection
+-- from INFORMATION_SCHEMA.JOBS) and process only Views. STEP 1/3/4 still run.
+DECLARE process_generated_tables BOOL DEFAULT TRUE;
 
 -- Lookback window over INFORMATION_SCHEMA.JOBS. The initial window is used on
 -- the first run (empty job registry); the incremental window is used thereafter.
@@ -240,28 +236,46 @@ DECLARE require_scheduled_query_label BOOL DEFAULT TRUE;
 -- not use this. This is a label only; no dataset by this name needs to exist.
 DECLARE ephemeral_object_dataset_label STRING DEFAULT 'ephemeral_generated_sql';
 
--- ----------------------------------------------------------------------------
--- Repository table naming
---
--- Physical table names are assembled as
---   prefix + marker + canonical base name + suffix
--- in the SET lines below. The prefix and suffix change per environment, so
--- they are variables. The master/transaction marker ('m_' / 't_') rarely
--- changes, so it is written directly as a literal in each SET line; edit that
--- literal only when a table must be reclassified. Include any '_' separators
--- in the prefix, marker, and suffix. Example: prefix='ope_', marker 'm_',
--- suffix='_tky' yields ope_m_lineage_definition_registry_tky. Leave a segment
--- empty to omit it. The names are injected into every repository DML via __T_*__
--- placeholders handled by render_dynamic_sql().
--- ----------------------------------------------------------------------------
-DECLARE table_name_prefix STRING DEFAULT '';
-DECLARE table_name_suffix STRING DEFAULT '';
+-- ============================================================================
+-- [C] DERIVED / INTERNAL -- computed from [A]/[B] or resolved at runtime; DO NOT edit
+-- ============================================================================
+-- Region string for the region-qualified INFORMATION_SCHEMA identifiers
+-- (`region-<job_region>`), which cannot be parameterized. Mirrors @@location (the
+-- single source of truth set at the top of this file); never set it here.
+DECLARE job_region STRING DEFAULT @@location;
 
+-- Role-specific projects. Take default_project_id (auto-detected below); pin one
+-- to a literal here only if that role's objects live in a separate project (a
+-- non-NULL value wins via COALESCE in the SET block below).
+DECLARE repository_project_id STRING DEFAULT NULL;
+DECLARE target_project_id STRING DEFAULT NULL;
+DECLARE udf_project_id STRING DEFAULT NULL;
+
+-- Target datasets resolved at runtime from target_dataset_*_patterns ([A]) by
+-- scanning INFORMATION_SCHEMA.SCHEMATA (see the resolution block below).
+DECLARE target_datasets ARRAY<STRING>;
+DECLARE target_datasets_lower ARRAY<STRING>;
+DECLARE view_defs_union_sql STRING;
+
+-- Repository physical table names: prefix + marker + canonical base + suffix,
+-- assembled by the SET lines below from table_name_prefix / table_name_suffix
+-- ([A]). The 'm_' / 't_' marker literal is inline in each SET line; the names are
+-- injected into every repository DML via __T_*__ placeholders handled by
+-- lnge_render_dynamic_sql().
 DECLARE table_definition_registry STRING;
 DECLARE table_direct_dependency STRING;
 DECLARE table_impact STRING;
 DECLARE table_diagnostic STRING;
 DECLARE table_job_registry STRING;
+-- STEP 5 snapshot: currently-existing objects not covered by analysis (report
+-- table, full-refreshed at the end of each run). Not part of lnge_render_dynamic_sql's
+-- fixed placeholder set; STEP 5 addresses it by a directly-built qualified name.
+DECLARE table_unanalyzed_definition STRING;
+-- Column usage index (per-reference, all clauses). Published by STEP 3 alongside
+-- the direct dependencies. Also outside lnge_render_dynamic_sql's fixed placeholders,
+-- so it is addressed by a directly-built qualified name (column_usage_fqn below).
+DECLARE table_column_usage STRING;
+DECLARE column_usage_fqn STRING;
 
 DECLARE repo_tables STRUCT<
   def_registry STRING,
@@ -272,41 +286,113 @@ DECLARE repo_tables STRUCT<
 >;
 
 -- Dynamic SQL work variables.
--- Identifier replacement is centralized in render_dynamic_sql().
+-- Identifier replacement is centralized in lnge_render_dynamic_sql().
 DECLARE sql_template STRING;
 DECLARE rendered_sql STRING;
+
+-- lnge_render_dynamic_sql (a PERSISTENT function co-located with the JavaScript UDF;
+-- its name is udf_render_function_name, declared with the other UDF names above)
+-- is invoked through one reusable dynamic statement, render_call_sql, built once
+-- below -- a static function reference cannot use a variable for its
+-- project/dataset, so the renderer location stays DECLARE-configurable.
+DECLARE render_call_sql STRING;
+
+-- Gate flags coordinating STEP 3 (analysis) and STEP 4 (impact rebuild). Set in
+-- STEP 3: whether the direct-dependency orphan cleanup removed any rows this run
+-- (i.e. an object was deactivated), and whether any analysis actually ran. STEP 4
+-- rebuilds impact only when one of these is true, so an unchanged daily run skips
+-- the rebuild.
+DECLARE orphan_direct_dep_deleted INT64 DEFAULT 0;
+DECLARE has_analysis_work BOOL DEFAULT FALSE;
 
 -- Work variables for building the cross-dataset source-metadata union SQL.
 DECLARE columns_union_sql STRING;
 DECLARE field_paths_union_sql STRING;
 DECLARE tables_union_sql STRING;
 DECLARE source_dataset_count INT64;
+-- Token extracted from the project id (see project_token_pattern).
+DECLARE project_token STRING;
+
+-- Auto-detect the running GCP project from INFORMATION_SCHEMA.SCHEMATA
+-- (catalog_name = the project the job runs in). The region-qualified identifier
+-- cannot be parameterized, so it is built from @@location. To pin the project,
+-- replace this SET with a literal. Role projects then take it unless pinned above.
+EXECUTE IMMEDIATE FORMAT(
+  "SELECT DISTINCT catalog_name FROM `region-%s`.INFORMATION_SCHEMA.SCHEMATA LIMIT 1",
+  @@location
+) INTO default_project_id;
+ASSERT default_project_id IS NOT NULL AS
+  'Could not auto-detect the project id from INFORMATION_SCHEMA.SCHEMATA (no datasets in this region?); set default_project_id to a literal.';
+SET repository_project_id = COALESCE(repository_project_id, default_project_id);
+SET target_project_id = COALESCE(target_project_id, default_project_id);
+SET udf_project_id = COALESCE(udf_project_id, default_project_id);
+
+-- Extract the project token and substitute it for the '{project_token}'
+-- placeholder in every name input BEFORE the names are assembled/asserted.
+SET project_token =
+  COALESCE(REGEXP_EXTRACT(default_project_id, project_token_pattern), '');
+SET repository_dataset =
+  REPLACE(repository_dataset, '{project_token}', project_token);
+SET udf_dataset = REPLACE(udf_dataset, '{project_token}', project_token);
+SET table_name_prefix =
+  REPLACE(table_name_prefix, '{project_token}', project_token);
+SET table_name_suffix =
+  REPLACE(table_name_suffix, '{project_token}', project_token);
+SET udf_name_prefix = REPLACE(udf_name_prefix, '{project_token}', project_token);
+SET udf_name_suffix = REPLACE(udf_name_suffix, '{project_token}', project_token);
+
+-- Guard: an unsubstituted '{project_token}' (or any invalid character) in a dataset
+-- name is surfaced here instead of failing later at DDL time. (Prefix/suffix feed
+-- the assembled table/UDF names, which are validated with their own ASSERTs.)
+ASSERT REGEXP_CONTAINS(repository_dataset, r'^[A-Za-z0-9_]+$')
+  AS 'repository_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+ASSERT REGEXP_CONTAINS(udf_dataset, r'^[A-Za-z0-9_]+$')
+  AS 'udf_dataset must be letters/digits/underscore only (check for an unsubstituted {project_token}).';
+
+-- UDF names: udf_prefix + 'lnge_' + canonical base + udf_suffix (no marker). Must
+-- match 01. Validity (letters/digits/'_' only) is asserted with the other udf
+-- checks below.
+SET udf_function_name =
+  udf_name_prefix || 'lnge_' || 'analyze_json' || udf_name_suffix;
+SET udf_fingerprint_function_name =
+  udf_name_prefix || 'lnge_' || 'fingerprint_sql' || udf_name_suffix;
+SET udf_render_function_name =
+  udf_name_prefix || 'lnge_' || 'render_dynamic_sql' || udf_name_suffix;
 
 -- Physical table names: prefix + marker + canonical base + suffix.
 -- The 'm_' / 't_' marker literal is inline; edit it to reclassify a table.
 SET table_definition_registry =
-  table_name_prefix || 'm_' || 'lineage_definition_registry'
+  table_name_prefix || 'lnge_' || 'm_' || 'definition_registry'
     || table_name_suffix;
 SET table_job_registry =
-  table_name_prefix || 'm_' || 'lineage_job_registry' || table_name_suffix;
+  table_name_prefix || 'lnge_' || 'm_' || 'job_registry' || table_name_suffix;
 SET table_direct_dependency =
-  table_name_prefix || 't_' || 'lineage_direct_dependency'
+  table_name_prefix || 'lnge_' || 't_' || 'direct_dependency'
     || table_name_suffix;
 SET table_impact =
-  table_name_prefix || 't_' || 'lineage_impact' || table_name_suffix;
+  table_name_prefix || 'lnge_' || 't_' || 'impact' || table_name_suffix;
 SET table_diagnostic =
-  table_name_prefix || 't_' || 'lineage_diagnostic' || table_name_suffix;
+  table_name_prefix || 'lnge_' || 't_' || 'diagnostic' || table_name_suffix;
+SET table_unanalyzed_definition =
+  table_name_prefix || 'lnge_' || 't_' || 'unanalyzed_definition'
+    || table_name_suffix;
+SET table_column_usage =
+  table_name_prefix || 'lnge_' || 't_' || 'column_usage' || table_name_suffix;
 
-ASSERT REGEXP_CONTAINS(table_definition_registry, r'^[A-Za-z0-9_]+$')
+ASSERT REGEXP_CONTAINS(table_definition_registry, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_definition_registry name.';
-ASSERT REGEXP_CONTAINS(table_direct_dependency, r'^[A-Za-z0-9_]+$')
+ASSERT REGEXP_CONTAINS(table_direct_dependency, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_direct_dependency name.';
-ASSERT REGEXP_CONTAINS(table_impact, r'^[A-Za-z0-9_]+$')
+ASSERT REGEXP_CONTAINS(table_impact, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_impact name.';
-ASSERT REGEXP_CONTAINS(table_diagnostic, r'^[A-Za-z0-9_]+$')
+ASSERT REGEXP_CONTAINS(table_diagnostic, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_diagnostic name.';
-ASSERT REGEXP_CONTAINS(table_job_registry, r'^[A-Za-z0-9_]+$')
+ASSERT REGEXP_CONTAINS(table_job_registry, r'^[A-Za-z0-9_-]+$')
 AS 'Invalid table_job_registry name.';
+ASSERT REGEXP_CONTAINS(table_unanalyzed_definition, r'^[A-Za-z0-9_-]+$')
+AS 'Invalid table_unanalyzed_definition name.';
+ASSERT REGEXP_CONTAINS(table_column_usage, r'^[A-Za-z0-9_-]+$')
+AS 'Invalid table_column_usage name.';
 
 SET repo_tables = STRUCT(
   table_definition_registry AS def_registry,
@@ -316,6 +402,20 @@ SET repo_tables = STRUCT(
   table_job_registry AS job_registry
 );
 
+-- Build the persistent-renderer call once and reuse it for every template.
+-- The function location comes from udf_project_id / udf_dataset (same place as
+-- lnge_analyze_json) via udf_render_function_name; only @sql_template varies
+-- per call, so the fixed configuration is baked in here. Every call site then
+-- runs: EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template.
+SET render_call_sql = FORMAT(
+  """SELECT `%s.%s.%s`(@sql_template, '%s', '%s', '%s', '%s', '%s', '%s', '%s', STRUCT('%s' AS def_registry, '%s' AS direct_dep, '%s' AS impact, '%s' AS diagnostic, '%s' AS job_registry))""",
+  udf_project_id, udf_dataset, udf_render_function_name,
+  repository_project_id, repository_dataset, target_project_id, job_region,
+  udf_project_id, udf_dataset, udf_function_name,
+  repo_tables.def_registry, repo_tables.direct_dep, repo_tables.impact,
+  repo_tables.diagnostic, repo_tables.job_registry
+);
+
 -- Repository tables are always addressed through the __T_*__ placeholders and
 -- EXECUTE IMMEDIATE so that configured physical names are honored. The session
 -- defaults below keep any remaining unqualified repository reference pointing
@@ -323,8 +423,6 @@ SET repo_tables = STRUCT(
 SET @@dataset_project_id = repository_project_id;
 SET @@dataset_id = repository_dataset;
 
-ASSERT @@location = job_region
-AS '@@location and job_region must be identical.';
 ASSERT REGEXP_CONTAINS(repository_project_id, r'^[A-Za-z0-9._:-]+$')
 AS 'Invalid repository_project_id.';
 ASSERT REGEXP_CONTAINS(repository_dataset, r'^[A-Za-z0-9_]+$')
@@ -334,9 +432,50 @@ AS 'Invalid target_project_id.';
 ASSERT REGEXP_CONTAINS(job_region, r'^[A-Za-z0-9-]+$')
 AS 'Invalid job_region.';
 
+-- Column usage index table qualified name (not a lnge_render_dynamic_sql placeholder).
+-- Built once and reused by STEP 3's publish. CREATE TABLE IF NOT EXISTS keeps a
+-- deployment whose 01 setup predates this table self-healing (no-op once 01 has
+-- created it); the authoritative schema lives in 01 -- keep the two in step.
+SET column_usage_fqn = FORMAT(
+  '%s.%s.%s', repository_project_id, repository_dataset, table_column_usage
+);
+EXECUTE IMMEDIATE FORMAT(
+  """
+  CREATE TABLE IF NOT EXISTS `%s`
+  (
+    source_project STRING,
+    source_dataset STRING,
+    source_object STRING NOT NULL,
+    source_object_type STRING NOT NULL,
+    source_column STRING NOT NULL,
+    source_field_path STRING,
+    object_project STRING NOT NULL,
+    object_dataset STRING NOT NULL,
+    object_name STRING NOT NULL,
+    object_type STRING NOT NULL,
+    generation_type STRING NOT NULL,
+    definition_hash STRING NOT NULL,
+    usage_type STRING NOT NULL,
+    reference_name STRING,
+    line_number INT64,
+    column_number INT64,
+    line_text STRING,
+    resolution_status STRING,
+    usage_key STRING NOT NULL,
+    analyzed_at TIMESTAMP NOT NULL
+  )
+  CLUSTER BY source_project, source_dataset, source_object, source_column
+  OPTIONS (
+    description = 'Per-reference column usage index (all clauses) for impact review'
+  )
+  """,
+  column_usage_fqn
+);
+
 -- Resolve target_datasets by scanning the target project's datasets in
--- job_region and applying the include/exclude regex patterns. Dataset ids keep
--- their real case (case-sensitive identifiers); matching is case-insensitive.
+-- job_region and applying the analysis dataset include/exclude patterns. Dataset
+-- ids keep their real case (case-sensitive identifiers); matching is
+-- case-insensitive.
 EXECUTE IMMEDIATE FORMAT(
   """
   SELECT ARRAY_AGG(schema_name)
@@ -357,13 +496,13 @@ EXECUTE IMMEDIATE FORMAT(
 )
 INTO target_datasets
 USING
-  target_dataset_include_patterns AS inc,
-  target_dataset_exclude_patterns AS exc;
+  analysis_include_dataset_patterns AS inc,
+  analysis_exclude_dataset_patterns AS exc;
 
 SET target_datasets = COALESCE(target_datasets, CAST([] AS ARRAY<STRING>));
 
 ASSERT ARRAY_LENGTH(target_datasets) > 0
-AS 'No target dataset matched target_dataset_include_patterns / exclude in the region.';
+AS 'No target dataset matched analysis_include_dataset_patterns / exclude in the region.';
 ASSERT (
   SELECT LOGICAL_AND(REGEXP_CONTAINS(d, r'^[A-Za-z0-9_]+$'))
   FROM UNNEST(target_datasets) AS d
@@ -380,6 +519,8 @@ ASSERT REGEXP_CONTAINS(udf_function_name, r'^[A-Za-z0-9_]+$')
 AS 'Invalid udf_function_name.';
 ASSERT REGEXP_CONTAINS(udf_fingerprint_function_name, r'^[A-Za-z0-9_]+$')
 AS 'Invalid udf_fingerprint_function_name.';
+ASSERT REGEXP_CONTAINS(udf_render_function_name, r'^[A-Za-z0-9_]+$')
+AS 'Invalid udf_render_function_name.';
 ASSERT configured_max_impact_rank BETWEEN 1 AND 1000
 AS 'configured_max_impact_rank must be between 1 and 1000.';
 
@@ -393,7 +534,7 @@ AS 'configured_max_impact_rank must be between 1 and 1000.';
 -- Multi-valued execution accounts remain table-managed.
 -- Dynamic SQL execution convention:
 --   1. SET sql_template
---   2. SET rendered_sql = render_dynamic_sql(...)
+--   2. SET rendered_sql to the rendered result of the persistent renderer
 --   3. ASSERT that no placeholder remains
 --   4. EXECUTE IMMEDIATE rendered_sql [INTO ...] [USING ...]
 -- Dynamic SQL placeholders:
@@ -409,6 +550,8 @@ AS 'configured_max_impact_rank must be between 1 and 1000.';
 -- ============================================================================
 -- STEP 1: Synchronize View definitions
 -- ============================================================================
+-- Progress marker: labels this step in the console's "All results" list.
+SELECT '===== STEP 1: synchronize View definitions =====' AS processing_step;
 BEGIN
   DECLARE step_started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
 
@@ -440,25 +583,27 @@ BEGIN
     view_defs_union_sql
   );
 
-  -- Drop Views whose name matches any registry_exclude_object_patterns regex, or
-  -- whose dataset matches any registry_exclude_dataset_patterns regex, so they
-  -- never enter the definition registry. object_name / object_dataset are already
-  -- lowercased. Any such View already registered is deactivated by the STEP 1
-  -- "not found" rule below (it is no longer present in current_view_definitions).
-  IF ARRAY_LENGTH(registry_exclude_object_patterns) > 0
-     OR ARRAY_LENGTH(registry_exclude_dataset_patterns) > 0 THEN
-    DELETE FROM current_view_definitions AS v
-    WHERE EXISTS (
+  -- Keep only Views that pass the analysis object-name gate, so the registry holds
+  -- exactly the analysis targets (the dataset scope is already applied by the
+  -- target-dataset resolution above). A View is kept when it matches the include
+  -- gate (empty include = all) AND no exclude pattern; object_name is already
+  -- lowercased. A View filtered out here -- or newly excluded by a config change --
+  -- is deactivated by the STEP 1 "not found" rule below (it is no longer present in
+  -- current_view_definitions), so excluded objects are not change-tracked.
+  DELETE FROM current_view_definitions AS v
+  WHERE (
+    ARRAY_LENGTH(analysis_include_object_patterns) > 0
+    AND NOT EXISTS (
       SELECT 1
-      FROM UNNEST(registry_exclude_object_patterns) AS pattern
+      FROM UNNEST(analysis_include_object_patterns) AS pattern
       WHERE REGEXP_CONTAINS(LOWER(v.object_name), LOWER(pattern))
     )
-    OR EXISTS (
-      SELECT 1
-      FROM UNNEST(registry_exclude_dataset_patterns) AS pattern
-      WHERE REGEXP_CONTAINS(LOWER(v.object_dataset), LOWER(pattern))
-    );
-  END IF;
+  )
+  OR EXISTS (
+    SELECT 1
+    FROM UNNEST(analysis_exclude_object_patterns) AS pattern
+    WHERE REGEXP_CONTAINS(LOWER(v.object_name), LOWER(pattern))
+  );
 
   -- --------------------------------------------------------------------------
   -- Physical-source metadata scope
@@ -473,7 +618,7 @@ BEGIN
   --
   -- These identifiers come from source_project_filters (validated below) and
   -- from SCHEMATA (BigQuery dataset names are restricted to [A-Za-z0-9_]), so the
-  -- union SQL is assembled with FORMAT rather than render_dynamic_sql.
+  -- union SQL is assembled with FORMAT rather than lnge_render_dynamic_sql.
   -- Requirement: the executing account needs metadata read on every listed
   -- project, and all source datasets must be in job_region.
   -- --------------------------------------------------------------------------
@@ -556,37 +701,11 @@ BEGIN
     tables_union_sql
   );
 
-  -- COLUMNS across every source dataset.
-  SET columns_union_sql = (
-    SELECT STRING_AGG(
-      FORMAT(
-        'SELECT * FROM `%s.%s.INFORMATION_SCHEMA.COLUMNS`',
-        project_id, dataset_id
-      ),
-      ' UNION ALL '
-    )
-    FROM (SELECT DISTINCT project_id, dataset_id FROM source_datasets)
-  );
-  EXECUTE IMMEDIATE FORMAT(
-    'CREATE OR REPLACE TEMP TABLE current_target_columns AS %s',
-    columns_union_sql
-  );
-
-  -- COLUMN_FIELD_PATHS across every source dataset.
-  SET field_paths_union_sql = (
-    SELECT STRING_AGG(
-      FORMAT(
-        'SELECT * FROM `%s.%s.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS`',
-        project_id, dataset_id
-      ),
-      ' UNION ALL '
-    )
-    FROM (SELECT DISTINCT project_id, dataset_id FROM source_datasets)
-  );
-  EXECUTE IMMEDIATE FORMAT(
-    'CREATE OR REPLACE TEMP TABLE current_target_column_field_paths AS %s',
-    field_paths_union_sql
-  );
+  -- current_target_columns and current_target_column_field_paths (the COLUMNS and
+  -- COLUMN_FIELD_PATHS scans over every source dataset) are NOT loaded here. They
+  -- are the heaviest scan in the run and are only consumed by STEP 3 analysis, so
+  -- STEP 3 loads them behind its has-changes gate -- an unchanged daily run never
+  -- pays for them. current_target_tables above is kept because STEP 2 uses it.
 
   SET sql_template = """
       MERGE
@@ -669,17 +788,7 @@ BEGIN
         );
   """;
 
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in lineage_definition_registry MERGE SQL.';
@@ -708,17 +817,7 @@ BEGIN
       );
   """;
 
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in inactive VIEW registry UPDATE SQL.';
@@ -741,6 +840,9 @@ END;
 -- Skipped entirely when process_generated_tables is FALSE (Views-only run).
 -- ============================================================================
 IF process_generated_tables THEN
+  -- Progress marker: labels this step in the console's "All results" list.
+  SELECT '===== STEP 2: synchronize Scheduled Query / DAG definitions ====='
+    AS processing_step;
 BEGIN
   DECLARE step_started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
   DECLARE lookback_days INT64;
@@ -786,17 +888,7 @@ BEGIN
       execution_source
   """;
 
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in lineage_job_registry CREATE SQL.';
@@ -808,17 +900,7 @@ BEGIN
     FROM `__T_JOB_REGISTRY__`
   """;
 
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in lineage_job_registry count SQL.';
@@ -836,6 +918,7 @@ BEGIN
     SELECT
       project_id,
       job_id,
+      parent_job_id,
       creation_time,
       start_time,
       end_time,
@@ -851,27 +934,25 @@ BEGIN
     )
       AND creation_time < CURRENT_TIMESTAMP()
       -- Fixed correctness conditions (do not parameterize): only successful,
-      -- completed QUERY jobs that produced a destination table.
+      -- completed QUERY jobs.
       AND job_type = 'QUERY'
       AND state = 'DONE'
       AND error_result IS NULL
       AND query IS NOT NULL
-      AND destination_table IS NOT NULL
-      -- Parameterized: statement types to collect (collected_statement_types).
-      AND statement_type IN UNNEST(@statement_types)
+      AND (
+        -- Collectable child statements: produced a destination table and are of a
+        -- collected statement type (SELECT / CTAS).
+        (
+          destination_table IS NOT NULL
+          AND statement_type IN UNNEST(@statement_types)
+        )
+        -- Parent SCRIPT jobs (no single destination) captured in the SAME scan so
+        -- STEP 2 can extract their DECLAREd variable names for child statements.
+        OR statement_type = 'SCRIPT'
+      )
   """;
 
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in raw_generated_table_jobs SQL.';
@@ -880,6 +961,49 @@ BEGIN
   USING
     lookback_days AS lookback_days,
     collected_statement_types AS statement_types;
+
+  -- Parent-script variable extraction. A child SELECT / CTAS that is a statement
+  -- of a BigQuery multi-statement script carries no DECLARE / SET context in its
+  -- own query text, so a reference to a script variable (e.g. WHERE dt = aaa)
+  -- looks like a column and would be reported as a missing column. Extract the
+  -- DECLAREd variable names from each parent SCRIPT (captured in the same JOBS
+  -- scan above) so STEP 3 can pass them to the analysis UDF as script_variables.
+  -- Only scripts that are actually a parent_job_id of a collected child are
+  -- processed. REGEXP_EXTRACT_ALL returns the captured identifier list of each
+  -- DECLARE; a single DECLARE may list several names (DECLARE a, b, c ...), so the
+  -- list is split on commas. Names are lower-cased (the engine matches
+  -- case-insensitively).
+  CREATE OR REPLACE TEMP TABLE script_declared_variables AS
+  SELECT
+    job_id,
+    ARRAY(
+      SELECT DISTINCT TRIM(LOWER(name))
+      FROM UNNEST(REGEXP_EXTRACT_ALL(
+        query,
+        r'(?i)\bDECLARE\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)'
+      )) AS decl_list,
+      UNNEST(SPLIT(decl_list, ',')) AS name
+      WHERE TRIM(name) != ''
+    ) AS script_variables
+  FROM raw_generated_table_jobs
+  WHERE statement_type = 'SCRIPT'
+    AND job_id IN (
+      SELECT DISTINCT parent_job_id
+      FROM raw_generated_table_jobs
+      WHERE parent_job_id IS NOT NULL
+        AND destination_table IS NOT NULL
+    );
+
+  -- Map each collected child job to its parent script's declared variables.
+  CREATE OR REPLACE TEMP TABLE job_script_variables AS
+  SELECT
+    child.job_id,
+    sd.script_variables
+  FROM raw_generated_table_jobs AS child
+  JOIN script_declared_variables AS sd
+    ON sd.job_id = child.parent_job_id
+  WHERE child.destination_table IS NOT NULL
+    AND child.parent_job_id IS NOT NULL;
 
   CREATE OR REPLACE TEMP TABLE recent_generated_table_jobs AS
   WITH target_jobs AS (
@@ -912,6 +1036,15 @@ BEGIN
       ) AS is_scheduled_query,
       user_email IN UNNEST(dag_service_accounts) AS is_dag
     FROM raw_generated_table_jobs
+    -- Children only. SCRIPT rows were pulled into the scan solely for parent-
+    -- variable extraction and must never enter the generated-table / analysis flow.
+    -- Exclude them by statement_type (a SCRIPT is never a collected type), not just
+    -- by destination: some SCRIPT jobs DO carry a destination_table (e.g. a script
+    -- whose single effective statement is a CTAS), which would otherwise slip
+    -- through and be "analyzed" as a whole multi-statement script -> query-parser
+    -- "top-level SELECT not found".
+    WHERE destination_table IS NOT NULL
+      AND statement_type IN UNNEST(collected_statement_types)
   ),
   classified_jobs AS (
     SELECT
@@ -937,20 +1070,37 @@ BEGIN
       LOWER(destination_table) AS destination_table
     FROM target_jobs
     WHERE (is_scheduled_query OR is_dag)
-      -- REGISTRY-stage exclusion for generated TABLEs: drop jobs whose
-      -- destination table name matches any registry_exclude_object_patterns
-      -- regex, or whose destination dataset matches any
-      -- registry_exclude_dataset_patterns regex, so they never enter the job /
-      -- definition registry (the STEP 1 counterpart drops Views the same way).
-      -- Empty array = exclude nothing on that dimension.
-      AND NOT EXISTS (
-        SELECT 1
-        FROM UNNEST(registry_exclude_object_patterns) AS pattern
-        WHERE REGEXP_CONTAINS(LOWER(destination_table), LOWER(pattern))
+      -- Keep only generated TABLEs that pass the analysis gates, so the registry
+      -- holds exactly the analysis targets (the STEP 1 counterpart filters Views the
+      -- same way). JOBS are not dataset-scoped, so both the object-name gate (on
+      -- destination_table) and the dataset gate (on destination_dataset) are applied
+      -- here: kept when it matches each include gate (empty include = all) AND no
+      -- exclude pattern. A job filtered out never enters the job / definition
+      -- registry, so excluded objects are not change-tracked.
+      AND (
+        ARRAY_LENGTH(analysis_include_object_patterns) = 0
+        OR EXISTS (
+          SELECT 1
+          FROM UNNEST(analysis_include_object_patterns) AS pattern
+          WHERE REGEXP_CONTAINS(LOWER(destination_table), LOWER(pattern))
+        )
       )
       AND NOT EXISTS (
         SELECT 1
-        FROM UNNEST(registry_exclude_dataset_patterns) AS pattern
+        FROM UNNEST(analysis_exclude_object_patterns) AS pattern
+        WHERE REGEXP_CONTAINS(LOWER(destination_table), LOWER(pattern))
+      )
+      AND (
+        ARRAY_LENGTH(analysis_include_dataset_patterns) = 0
+        OR EXISTS (
+          SELECT 1
+          FROM UNNEST(analysis_include_dataset_patterns) AS pattern
+          WHERE REGEXP_CONTAINS(LOWER(destination_dataset), LOWER(pattern))
+        )
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM UNNEST(analysis_exclude_dataset_patterns) AS pattern
         WHERE REGEXP_CONTAINS(LOWER(destination_dataset), LOWER(pattern))
       )
   ),
@@ -1060,17 +1210,7 @@ BEGIN
         );
   """;
 
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in lineage_job_registry MERGE SQL.';
@@ -1081,7 +1221,7 @@ BEGIN
   -- alike). The structural fingerprint (literals normalized) is what lets us
   -- collapse rotating-destination jobs whose SQL is identical. Computed once per
   -- job_id (guarded by sql_fingerprint IS NULL). Built inline rather than via
-  -- render_dynamic_sql because it needs the fingerprint UDF's qualified name.
+  -- lnge_render_dynamic_sql because it needs the fingerprint UDF's qualified name.
   SET rendered_sql = FORMAT(
     """
     UPDATE `%s`
@@ -1119,6 +1259,7 @@ BEGIN
     WITH classified AS (
       SELECT
         jobs.*,
+        svars.script_variables AS script_variables,
         (
           target_table.table_name IS NOT NULL
           AND target_table.expiration_timestamp IS NULL
@@ -1128,6 +1269,10 @@ BEGIN
         ON LOWER(target_table.table_catalog) = LOWER(jobs.destination_project)
         AND LOWER(target_table.table_schema) = LOWER(jobs.destination_dataset)
         AND LOWER(target_table.table_name) = LOWER(jobs.destination_table)
+      -- Parent-script variables for jobs collected in THIS run (older jobs miss;
+      -- the MERGE below COALESCEs so a miss never erases a stored value).
+      LEFT JOIN job_script_variables AS svars
+        ON svars.job_id = jobs.job_id
     )
     SELECT
       IF(destination_is_persistent, destination_project, @target_project)
@@ -1150,7 +1295,8 @@ BEGIN
       job_id AS source_job_id,
       creation_time AS source_job_time,
       user_email AS source_user_email,
-      labels AS labels
+      labels AS labels,
+      script_variables AS script_variables
     FROM classified
     QUALIFY ROW_NUMBER() OVER (
       PARTITION BY
@@ -1167,17 +1313,7 @@ BEGIN
     ) = 1
   """;
 
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in latest_generated_table_definitions SQL.';
@@ -1212,6 +1348,11 @@ BEGIN
           target.source_job_time = source.source_job_time,
           target.source_user_email = source.source_user_email,
           target.labels = source.labels,
+          -- Preserve a previously-stored value when this run did not re-collect the
+          -- job (older representative -> source.script_variables is NULL).
+          target.script_variables = COALESCE(
+            source.script_variables, target.script_variables
+          ),
           target.is_changed = (
             target.is_changed
             OR target.definition_hash IS DISTINCT FROM source.definition_hash
@@ -1241,6 +1382,7 @@ BEGIN
           source_job_time,
           source_user_email,
           labels,
+          script_variables,
           is_changed,
           is_active,
           analysis_status,
@@ -1266,6 +1408,7 @@ BEGIN
           source.source_job_time,
           source.source_user_email,
           source.labels,
+          source.script_variables,
           TRUE,
           TRUE,
           NULL,
@@ -1277,17 +1420,7 @@ BEGIN
         );
   """;
 
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in lineage_definition_registry MERGE SQL.';
@@ -1330,17 +1463,7 @@ BEGIN
       );
   """;
 
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in inactive generated-table registry UPDATE SQL.';
@@ -1374,17 +1497,7 @@ BEGIN
       );
   """;
 
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in ephemeral fingerprint age-out UPDATE SQL.';
@@ -1453,16 +1566,9 @@ BEGIN
   DECLARE strict_mode BOOL DEFAULT parser_strict_mode;
   DECLARE analyzed_object_count INT64 DEFAULT 0;
   DECLARE failed_object_count INT64 DEFAULT 0;
-
-  -- Source discovery runs the JavaScript UDF across every changed definition,
-  -- like the STEP 3 analysis pass, and at large target counts it likewise
-  -- accumulates V8 heap in the per-slot UDF context and hits "Resource exceeded
-  -- during query execution: UDF out of memory". It is therefore run in
-  -- fixed-size chunks (one EXECUTE IMMEDIATE job per chunk). Lower this if OOM
-  -- persists; keep it roughly in step with analysis_udf_chunk_size below.
-  DECLARE discovery_udf_chunk_size INT64 DEFAULT 200;
-  DECLARE discovery_udf_chunk_count INT64 DEFAULT 0;
-  DECLARE discovery_udf_chunk_index INT64 DEFAULT 0;
+  -- Datasets that have at least one analyzable changed object this run. Empty on
+  -- an unchanged run, which skips the metadata scan and the whole analysis loop.
+  DECLARE changed_datasets ARRAY<STRING>;
 
   -- --------------------------------------------------------------------------
   -- Remove repository rows whose target definition is no longer active.
@@ -1483,22 +1589,15 @@ BEGIN
     );
   """;
 
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in orphan direct-dependency DELETE SQL.';
 
   EXECUTE IMMEDIATE rendered_sql;
+  -- Rows removed here mean a target object was deactivated (dropped/removed), so
+  -- the impact graph changed even if nothing was re-analyzed -> STEP 4 must run.
+  SET orphan_direct_dep_deleted = @@row_count;
 
   SET sql_template = """
     DELETE FROM
@@ -1515,30 +1614,97 @@ BEGIN
     );
   """;
 
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in orphan diagnostic DELETE SQL.';
 
   EXECUTE IMMEDIATE rendered_sql;
 
+  -- Column usage rows for a deactivated referencing object are orphans too (real
+  -- table via column_usage_fqn; keyed on the object that CONTAINS the reference).
+  EXECUTE IMMEDIATE FORMAT(
+    """
+    DELETE FROM `%s` AS usage
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM `%s` AS registry
+      WHERE registry.is_active = TRUE
+        AND LOWER(registry.object_project) = LOWER(usage.object_project)
+        AND LOWER(registry.object_dataset) = LOWER(usage.object_dataset)
+        AND LOWER(registry.object_name) = LOWER(usage.object_name)
+        AND registry.object_type = usage.object_type
+        AND registry.generation_type = usage.generation_type
+    )
+    """,
+    column_usage_fqn,
+    FORMAT('%s.%s.%s', repository_project_id, repository_dataset, table_definition_registry)
+  );
+
   -- --------------------------------------------------------------------------
-  -- Analyze active definitions whose current definition has changed.
-  --
-  -- The changed-definition set is materialized into a temporary table through
-  -- dynamic SQL so that the repository table name stays configurable while the
-  -- FOR ... IN loop query itself remains static.
+  -- Which datasets have analyzable changed objects this run. The registry already
+  -- holds only analysis targets (the analysis object/dataset filters are applied at
+  -- collection in STEP 1/2), so this just needs active, changed, defined objects of
+  -- the analyzed types -- no filter re-application. process_generated_tables still
+  -- gates whether generated TABLEs are analyzed. Empty => nothing changed =>
+  -- everything expensive below (the metadata scan and the analysis loop) is skipped.
   -- --------------------------------------------------------------------------
+  SET sql_template = """
+    SELECT ARRAY_AGG(DISTINCT object_dataset)
+    FROM
+      `__T_DEF_REGISTRY__`
+    WHERE is_active = TRUE
+      AND is_changed = TRUE
+      AND definition_text IS NOT NULL
+      AND object_type IN ('VIEW', 'TABLE')
+      AND (@include_tables OR object_type = 'VIEW')
+  """;
+
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
+
+  ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
+  AS 'Unresolved placeholder in changed-datasets probe SQL.';
+
+  EXECUTE IMMEDIATE rendered_sql
+  INTO changed_datasets
+  USING
+    process_generated_tables AS include_tables;
+
+  SET changed_datasets = COALESCE(changed_datasets, CAST([] AS ARRAY<STRING>));
+  SET has_analysis_work = ARRAY_LENGTH(changed_datasets) > 0;
+
+  IF has_analysis_work THEN
+
+  -- ------------------------------------------------------------------------
+  -- D -- discovery pre-pass. Run source discovery once for every changed object
+  -- (per dataset, for memory), accumulate the results, and collect the referenced
+  -- source dataset names -- so the column-metadata scan below covers only the
+  -- datasets the changed objects actually reference, not every source dataset.
+  -- The analysis loop reuses these accumulated discovery rows (no second UDF pass).
+  -- ------------------------------------------------------------------------
+  CREATE OR REPLACE TEMP TABLE all_changed_with_discovery (
+    object_project STRING,
+    object_dataset STRING,
+    object_name STRING,
+    object_type STRING,
+    generation_type STRING,
+    definition_text STRING,
+    definition_hash STRING,
+    script_variables ARRAY<STRING>,
+    source_discovery_json STRING
+  );
+  CREATE OR REPLACE TEMP TABLE referenced_source_datasets (dataset_name STRING);
+
+  FOR ds_row IN (
+    SELECT ds FROM UNNEST(changed_datasets) AS ds ORDER BY ds
+  ) DO
+
+  EXECUTE IMMEDIATE FORMAT(
+    "SELECT '----- STEP 3.discovery | dataset: %s -----' AS processing_step",
+    ds_row.ds
+  );
+
+  -- Materialize the changed-definition set for the current dataset only.
   SET sql_template = """
     CREATE OR REPLACE TEMP TABLE changed_definitions_to_analyze AS
     SELECT
@@ -1548,81 +1714,237 @@ BEGIN
       object_type,
       generation_type,
       definition_text,
-      definition_hash
+      definition_hash,
+      script_variables
     FROM
       `__T_DEF_REGISTRY__`
     WHERE is_active = TRUE
       AND is_changed = TRUE
       AND definition_text IS NOT NULL
       AND object_type IN ('VIEW', 'TABLE')
-      -- When generated-table collection is off, analyze Views only.
       AND (@include_tables OR object_type = 'VIEW')
-      -- Include only objects whose NAME matches a configured regex (empty = all).
-      AND (
-        ARRAY_LENGTH(@include_patterns) = 0
-        OR EXISTS (
-          SELECT 1
-          FROM UNNEST(@include_patterns) AS pattern
-          WHERE REGEXP_CONTAINS(
-            LOWER(object_name),
-            LOWER(pattern)
-          )
-        )
-      )
-      -- Include only objects whose DATASET matches a configured regex (empty = all).
-      AND (
-        ARRAY_LENGTH(@include_dataset_patterns) = 0
-        OR EXISTS (
-          SELECT 1
-          FROM UNNEST(@include_dataset_patterns) AS pattern
-          WHERE REGEXP_CONTAINS(
-            LOWER(object_dataset),
-            LOWER(pattern)
-          )
-        )
-      )
-      -- Exclude objects whose name matches any configured regex.
-      AND NOT EXISTS (
-        SELECT 1
-        FROM UNNEST(@exclude_patterns) AS pattern
-        WHERE REGEXP_CONTAINS(
-          LOWER(object_name),
-          LOWER(pattern)
-        )
-      )
-      -- Exclude objects whose dataset matches any configured regex.
-      AND NOT EXISTS (
-        SELECT 1
-        FROM UNNEST(@exclude_dataset_patterns) AS pattern
-        WHERE REGEXP_CONTAINS(
-          LOWER(object_dataset),
-          LOWER(pattern)
-        )
-      )
+      AND LOWER(object_dataset) = LOWER(@current_dataset)
   """;
 
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
-
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in changed-definitions materialization SQL.';
-
   EXECUTE IMMEDIATE rendered_sql
   USING
     process_generated_tables AS include_tables,
-    analysis_include_object_patterns AS include_patterns,
-    analysis_exclude_object_patterns AS exclude_patterns,
-    analysis_include_dataset_patterns AS include_dataset_patterns,
-    analysis_exclude_dataset_patterns AS exclude_dataset_patterns;
+    ds_row.ds AS current_dataset;
+
+  -- Source discovery: single UDF query over this dataset's changed set.
+  SET sql_template = """
+    CREATE OR REPLACE TEMP TABLE changed_definitions_with_discovery AS
+    SELECT
+      object_project,
+      object_dataset,
+      object_name,
+      object_type,
+      generation_type,
+      definition_text,
+      definition_hash,
+      script_variables,
+      `__UDF__`(
+        definition_text,
+        '[]',
+        @options_json,
+        NULL
+      ) AS source_discovery_json
+    FROM
+      changed_definitions_to_analyze
+  """;
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
+  ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
+  AS 'Unresolved placeholder in batch source-discovery SQL.';
+  EXECUTE IMMEDIATE rendered_sql
+  USING
+    TO_JSON_STRING(STRUCT(TRUE AS source_discovery_only)) AS options_json;
+
+  -- Accumulate this dataset's discovery, and its referenced source dataset names
+  -- (the dataset segment -- second-to-last -- of each discovered source name).
+  INSERT INTO all_changed_with_discovery (
+    object_project, object_dataset, object_name, object_type,
+    generation_type, definition_text, definition_hash, script_variables,
+    source_discovery_json
+  )
+  SELECT
+    object_project, object_dataset, object_name, object_type,
+    generation_type, definition_text, definition_hash, script_variables,
+    source_discovery_json
+  FROM changed_definitions_with_discovery;
+
+  INSERT INTO referenced_source_datasets (dataset_name)
+  SELECT DISTINCT
+    SPLIT(LOWER(JSON_VALUE(src_json, '$')), '.')[
+      SAFE_OFFSET(ARRAY_LENGTH(SPLIT(JSON_VALUE(src_json, '$'), '.')) - 2)
+    ]
+  FROM changed_definitions_with_discovery,
+    UNNEST(
+      COALESCE(
+        JSON_QUERY_ARRAY(source_discovery_json, '$.source_tables'),
+        CAST([] AS ARRAY<STRING>)
+      )
+    ) AS src_json
+  WHERE ARRAY_LENGTH(SPLIT(JSON_VALUE(src_json, '$'), '.')) >= 2;
+
+  END FOR;
+
+  -- ------------------------------------------------------------------------
+  -- D -- column metadata scoped to referenced source datasets. Safe
+  -- over-inclusion: load COLUMNS / COLUMN_FIELD_PATHS for any ACCESSIBLE source
+  -- dataset whose NAME is referenced by a changed object. This never loads less
+  -- than the referenced accessible sources (so lineage resolution is unchanged),
+  -- it only skips datasets no changed object references. COLUMNS and
+  -- COLUMN_FIELD_PATHS are the heaviest scan in the run. The COALESCE fallback
+  -- creates an empty but correctly-typed table when nothing is referenced (e.g.
+  -- changed objects with no physical sources).
+  --
+  -- Each UNION ALL branch projects an EXPLICIT column list, never SELECT *: the
+  -- INFORMATION_SCHEMA.COLUMNS / COLUMN_FIELD_PATHS views expose a varying number of
+  -- trailing columns across datasets/projects (collation, rounding_mode, policy
+  -- tags, ...), so SELECT * gives branches mismatched column counts and the UNION
+  -- fails. The listed columns are the stable core the resolver consumes.
+  -- ------------------------------------------------------------------------
+  SET columns_union_sql = (
+    SELECT STRING_AGG(
+      FORMAT(
+        'SELECT table_catalog, table_schema, table_name, column_name, ordinal_position, data_type, is_nullable FROM `%s.%s.INFORMATION_SCHEMA.COLUMNS`',
+        project_id, dataset_id
+      ),
+      ' UNION ALL '
+    )
+    FROM (
+      SELECT DISTINCT sd.project_id, sd.dataset_id
+      FROM source_datasets AS sd
+      WHERE LOWER(sd.dataset_id) IN (
+        SELECT LOWER(dataset_name)
+        FROM referenced_source_datasets
+        WHERE dataset_name IS NOT NULL
+      )
+    )
+  );
+  SET columns_union_sql = COALESCE(
+    columns_union_sql,
+    (SELECT FORMAT(
+       'SELECT table_catalog, table_schema, table_name, column_name, ordinal_position, data_type, is_nullable FROM `%s.%s.INFORMATION_SCHEMA.COLUMNS` WHERE FALSE',
+       project_id, dataset_id
+     )
+     FROM source_datasets LIMIT 1)
+  );
+  EXECUTE IMMEDIATE FORMAT(
+    'CREATE OR REPLACE TEMP TABLE current_target_columns AS %s',
+    columns_union_sql
+  );
+
+  SET field_paths_union_sql = (
+    SELECT STRING_AGG(
+      FORMAT(
+        'SELECT table_catalog, table_schema, table_name, column_name, field_path, data_type FROM `%s.%s.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS`',
+        project_id, dataset_id
+      ),
+      ' UNION ALL '
+    )
+    FROM (
+      SELECT DISTINCT sd.project_id, sd.dataset_id
+      FROM source_datasets AS sd
+      WHERE LOWER(sd.dataset_id) IN (
+        SELECT LOWER(dataset_name)
+        FROM referenced_source_datasets
+        WHERE dataset_name IS NOT NULL
+      )
+    )
+  );
+  SET field_paths_union_sql = COALESCE(
+    field_paths_union_sql,
+    (SELECT FORMAT(
+       'SELECT table_catalog, table_schema, table_name, column_name, field_path, data_type FROM `%s.%s.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS` WHERE FALSE',
+       project_id, dataset_id
+     )
+     FROM source_datasets LIMIT 1)
+  );
+  EXECUTE IMMEDIATE FORMAT(
+    'CREATE OR REPLACE TEMP TABLE current_target_column_field_paths AS %s',
+    field_paths_union_sql
+  );
+
+  -- --------------------------------------------------------------------------
+  -- Fresh TABLES existence set, taken HERE (STEP 3) alongside the column
+  -- metadata and over the SAME referenced source datasets. The publishability
+  -- classifier (batch_object_source_flags) uses this, NOT the STEP 1
+  -- current_target_tables snapshot: a source table dropped between STEP 1 and
+  -- STEP 3 is still listed in that older snapshot, which would make it look
+  -- "present but uncollected" (a coverage gap -> object FAILED) instead of
+  -- "absent" (a dropped table -> object publishable, warning suppressed). Reading
+  -- existence at the same moment as the columns closes that window, so a table
+  -- that no longer exists when its columns are scanned is correctly treated as
+  -- absent. Same scope as current_target_columns (referenced & accessible source
+  -- datasets); the typed empty fallback covers "nothing referenced".
+  -- --------------------------------------------------------------------------
+  SET tables_union_sql = (
+    SELECT STRING_AGG(
+      FORMAT(
+        'SELECT LOWER(table_catalog) AS table_catalog, '
+        || 'LOWER(table_schema) AS table_schema, '
+        || 'LOWER(table_name) AS table_name '
+        || 'FROM `%s.%s.INFORMATION_SCHEMA.TABLES`',
+        project_id, dataset_id
+      ),
+      ' UNION ALL '
+    )
+    FROM (
+      SELECT DISTINCT sd.project_id, sd.dataset_id
+      FROM source_datasets AS sd
+      WHERE LOWER(sd.dataset_id) IN (
+        SELECT LOWER(dataset_name)
+        FROM referenced_source_datasets
+        WHERE dataset_name IS NOT NULL
+      )
+    )
+  );
+  SET tables_union_sql = COALESCE(
+    tables_union_sql,
+    (SELECT FORMAT(
+       'SELECT LOWER(table_catalog) AS table_catalog, '
+       || 'LOWER(table_schema) AS table_schema, '
+       || 'LOWER(table_name) AS table_name '
+       || 'FROM `%s.%s.INFORMATION_SCHEMA.TABLES` WHERE FALSE',
+       project_id, dataset_id
+     )
+     FROM source_datasets LIMIT 1)
+  );
+  EXECUTE IMMEDIATE FORMAT(
+    'CREATE OR REPLACE TEMP TABLE current_referenced_tables AS %s',
+    tables_union_sql
+  );
+
+  -- --------------------------------------------------------------------------
+  -- Per-dataset analysis loop, over only the datasets with changed objects.
+  --
+  -- The JavaScript lineage UDF is a per-row scalar function; running it across
+  -- every changed object in the region in a single pass accumulates V8 heap in
+  -- the per-slot UDF context and hits "UDF out of memory" at large target counts.
+  -- Iterating one dataset at a time bounds how many objects a single UDF pass
+  -- processes. Inside the loop the analysis set is scoped to the single current
+  -- dataset via an anchored (^ds$) include pattern. Loop body indentation is kept
+  -- flat to bound the diff; every statement through the inner analysis block runs
+  -- per dataset.
+  -- --------------------------------------------------------------------------
+  FOR ds_row IN (
+    SELECT ds FROM UNNEST(changed_datasets) AS ds ORDER BY ds
+  ) DO
+
+  -- Progress marker. BigQuery prepends the lnge_render_dynamic_sql TEMP FUNCTION DDL
+  -- to the query text of every child job that calls it, so the console's "All
+  -- results" list would otherwise show only "create temp function
+  -- lnge_render_dynamic_sql(" for each statement. This marker runs a dynamic SELECT
+  -- with the dataset name baked into the executed text (via FORMAT, not a bound
+  -- variable), so each iteration surfaces which dataset STEP 3 is processing.
+  EXECUTE IMMEDIATE FORMAT(
+    "SELECT '===== STEP 3 | dataset: %s =====' AS processing_step",
+    ds_row.ds
+  );
 
   -- Snapshot the active VIEW registry once so the per-object staging query can
   -- classify source object types without referencing the (configurable-named)
@@ -1642,17 +1964,7 @@ BEGIN
       AND object_type = 'VIEW'
   """;
 
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in active_view_definitions snapshot SQL.';
@@ -1660,127 +1972,31 @@ BEGIN
   EXECUTE IMMEDIATE rendered_sql;
 
   -- --------------------------------------------------------------------------
-  -- Batch source discovery: run the persistent UDF in source_discovery_only
-  -- mode ONCE across every changed definition, instead of once per object
-  -- inside the loop below. The UDF is a per-row scalar function, so a single
-  -- query computes each object's source list while paying the JavaScript UDF
-  -- initialization cost a single time rather than once per object. This turns
-  -- the N per-object discovery jobs into one batch job.
+  -- Reuse the source discovery already computed by the pre-pass. The pre-pass ran
+  -- the persistent UDF in source_discovery_only mode once per changed object and
+  -- accumulated every row (with its source_discovery_json) into
+  -- all_changed_with_discovery. Here we simply read this dataset's rows back, so
+  -- the analysis loop never runs a second UDF discovery pass.
   --
-  -- Isolation is preserved: source_discovery_only never throws (it returns
-  -- analysis_status = 'PARTIAL_FAILURE' with an error payload for a failing
-  -- object), so one object's discovery failure surfaces only as that object's
-  -- source_discovery_json cell. The loop still validates the per-object status
-  -- and RAISEs into this object's EXCEPTION handler exactly as before.
+  -- Isolation is preserved exactly as before: source_discovery_only never threw
+  -- in the pre-pass (it returns analysis_status = 'PARTIAL_FAILURE' with an error
+  -- payload for a failing object), so a failing object surfaces only as its own
+  -- source_discovery_json cell. The loop still validates the per-object status and
+  -- RAISEs into this object's EXCEPTION handler exactly as before.
   -- --------------------------------------------------------------------------
-  -- Create the discovery result table empty (WHERE FALSE: the UDF is not
-  -- evaluated, only the schema is fixed), then fill it one chunk per job.
-  SET sql_template = """
-    CREATE OR REPLACE TEMP TABLE changed_definitions_with_discovery AS
-    SELECT
-      object_project,
-      object_dataset,
-      object_name,
-      object_type,
-      generation_type,
-      definition_text,
-      definition_hash,
-      `__UDF__`(
-        definition_text,
-        '[]',
-        @options_json,
-        NULL
-      ) AS source_discovery_json
-    FROM
-      changed_definitions_to_analyze
-    WHERE FALSE
-  """;
-
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
-
-  ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
-  AS 'Unresolved placeholder in batch source-discovery result-table SQL.';
-
-  EXECUTE IMMEDIATE rendered_sql
-  USING
-    TO_JSON_STRING(STRUCT(TRUE AS source_discovery_only)) AS options_json;
-
-  SET discovery_udf_chunk_count = (
-    SELECT DIV(COUNT(*) + discovery_udf_chunk_size - 1, discovery_udf_chunk_size)
-    FROM changed_definitions_to_analyze
-  );
-
-  -- Per-chunk INSERT. A row's chunk is its ROW_NUMBER (over the full changed set)
-  -- bucketed by @chunk_size; the UDF is evaluated only for the selected chunk, so
-  -- each job runs at most @chunk_size invocations.
-  SET sql_template = """
-    INSERT INTO changed_definitions_with_discovery
-    SELECT
-      object_project,
-      object_dataset,
-      object_name,
-      object_type,
-      generation_type,
-      definition_text,
-      definition_hash,
-      `__UDF__`(
-        definition_text,
-        '[]',
-        @options_json,
-        NULL
-      ) AS source_discovery_json
-    FROM (
-      SELECT
-        c.*,
-        DIV(
-          ROW_NUMBER() OVER (
-            ORDER BY
-              object_project, object_dataset, object_name,
-              object_type, generation_type, definition_hash
-          ) - 1,
-          @chunk_size
-        ) AS discovery_chunk
-      FROM changed_definitions_to_analyze AS c
-    )
-    WHERE discovery_chunk = @chunk_index
-  """;
-
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
-
-  ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
-  AS 'Unresolved placeholder in batch source-discovery SQL.';
-
-  SET discovery_udf_chunk_index = 0;
-
-  WHILE discovery_udf_chunk_index < discovery_udf_chunk_count DO
-    EXECUTE IMMEDIATE rendered_sql
-    USING
-      TO_JSON_STRING(STRUCT(TRUE AS source_discovery_only)) AS options_json,
-      discovery_udf_chunk_size AS chunk_size,
-      discovery_udf_chunk_index AS chunk_index;
-
-    SET discovery_udf_chunk_index = discovery_udf_chunk_index + 1;
-  END WHILE;
+  CREATE OR REPLACE TEMP TABLE changed_definitions_with_discovery AS
+  SELECT
+    object_project,
+    object_dataset,
+    object_name,
+    object_type,
+    generation_type,
+    definition_text,
+    definition_hash,
+    script_variables,
+    source_discovery_json
+  FROM all_changed_with_discovery
+  WHERE LOWER(object_dataset) = LOWER(ds_row.ds);
 
   -- ==========================================================================
   -- Batch analysis and publish (full set-based STEP 3).
@@ -1818,18 +2034,6 @@ BEGIN
     -- visible inside the publish block's EXCEPTION handler: BigQuery does not
     -- expose a variable to the EXCEPTION section of the same BEGIN block.
     DECLARE publish_err_message STRING;
-
-    -- The lineage UDF is run in fixed-size chunks rather than one query over all
-    -- analyzable objects. A single query calling the JavaScript UDF across
-    -- thousands of rows accumulates V8 heap in the per-slot UDF context and hits
-    -- "Resource exceeded during query execution: UDF out of memory" as the target
-    -- set grows (no single object is large; the peak is aggregate). Splitting the
-    -- run into separate EXECUTE IMMEDIATE jobs of analysis_udf_chunk_size rows
-    -- each bounds how many invocations share a context. Lower this if OOM
-    -- persists; raise it to reduce per-run job overhead.
-    DECLARE analysis_udf_chunk_size INT64 DEFAULT 200;
-    DECLARE analysis_udf_chunk_count INT64 DEFAULT 0;
-    DECLARE analysis_udf_chunk_index INT64 DEFAULT 0;
 
     -- ------------------------------------------------------------------------
     -- 1. Scope physical-column metadata for every object with COMPLETED source
@@ -2111,24 +2315,7 @@ BEGIN
     CREATE OR REPLACE TEMP TABLE batch_analysis_input AS
     SELECT
       t.*,
-      (t.preanalysis_failure_reason IS NULL) AS is_analyzable,
-      -- Chunk number for the UDF run. Analyzable rows are numbered contiguously
-      -- (partitioned on analyzability so the numbering ignores skipped rows) and
-      -- grouped into buckets of analysis_udf_chunk_size; non-analyzable rows get
-      -- NULL. The UDF is executed one chunk per job to bound per-context memory.
-      CASE
-        WHEN t.preanalysis_failure_reason IS NULL THEN
-          DIV(
-            ROW_NUMBER() OVER (
-              PARTITION BY (t.preanalysis_failure_reason IS NULL)
-              ORDER BY
-                t.object_project, t.object_dataset, t.object_name,
-                t.object_type, t.generation_type, t.definition_hash
-            ) - 1,
-            analysis_udf_chunk_size
-          )
-        ELSE NULL
-      END AS udf_chunk
+      (t.preanalysis_failure_reason IS NULL) AS is_analyzable
     FROM (
       SELECT
         c.object_project,
@@ -2138,6 +2325,7 @@ BEGIN
         c.generation_type,
         c.definition_hash,
         c.definition_text,
+        c.script_variables,
         GENERATE_UUID() AS analysis_id,
         COALESCE(
           JSON_VALUE(c.source_discovery_json, '$.analysis.analysis_status'),
@@ -2167,15 +2355,19 @@ BEGIN
     ) AS t;
 
     -- ------------------------------------------------------------------------
-    -- 3. Run the persistent lineage UDF for every analyzable object, in
-    -- fixed-size chunks. A single query calling the JavaScript UDF across all
-    -- rows accumulates V8 heap in the per-slot UDF context and hits "UDF out of
-    -- memory" as the target set grows, even though no single object is large.
-    -- The result table is created empty once (WHERE FALSE, so the UDF is not
-    -- evaluated but the schema is fixed), then one INSERT job per chunk appends
-    -- its rows. Each job/context handles at most analysis_udf_chunk_size
-    -- invocations. The result JSON lives in a table column (no 1 MiB
-    -- script-variable limit).
+    -- Progress marker: analysis sub-step for the current dataset.
+    EXECUTE IMMEDIATE FORMAT(
+      "SELECT '----- STEP 3.analysis | dataset: %s -----' AS processing_step",
+      ds_row.ds
+    );
+
+    -- 3. Run the persistent lineage UDF over every analyzable object in the
+    -- current dataset in a single query. Per-dataset scoping (the enclosing
+    -- loop) bounds how many objects share one per-slot UDF context, which keeps
+    -- the JavaScript UDF under the memory ceiling that a region-wide single pass
+    -- would blow ("Resource exceeded during query execution: UDF out of
+    -- memory"). The result JSON lives in a table column (no 1 MiB script-
+    -- variable limit).
     -- ------------------------------------------------------------------------
     SET sql_template = """
       CREATE OR REPLACE TEMP TABLE batch_udf_results AS
@@ -2209,83 +2401,11 @@ BEGIN
             p.physical_columns_json,
             TO_JSON_STRING(STRUCT(
               @strict_mode AS strict_mode,
-              TRUE AS compact_export
-            )),
-            TO_JSON_STRING(STRUCT(
-              p.analysis_id AS analysis_id,
-              p.object_project AS view_project,
-              p.object_dataset AS view_dataset,
-              p.object_name AS view_name,
-              @analyzed_at_iso AS analyzed_at
-            ))
-          ) AS exported_json
-        FROM batch_analysis_input AS p
-        WHERE FALSE
-      ) AS x
-    """;
-
-    SET rendered_sql = render_dynamic_sql(
-      sql_template,
-      repository_project_id,
-      repository_dataset,
-      target_project_id,
-      job_region,
-      udf_project_id,
-      udf_dataset,
-      udf_function_name,
-      repo_tables
-    );
-
-    ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
-    AS 'Unresolved placeholder in batch UDF result-table SQL.';
-
-    -- Create the empty result table (no UDF invocation: WHERE FALSE).
-    EXECUTE IMMEDIATE rendered_sql
-    USING
-      strict_mode AS strict_mode,
-      batch_analyzed_at AS analyzed_at,
-      FORMAT_TIMESTAMP('%FT%H:%M:%E*S%Ez', batch_analyzed_at) AS analyzed_at_iso;
-
-    SET analysis_udf_chunk_count = (
-      SELECT DIV(COUNT(*) + analysis_udf_chunk_size - 1, analysis_udf_chunk_size)
-      FROM batch_analysis_input
-      WHERE is_analyzable
-    );
-
-    -- Per-chunk INSERT template. Rendered once; @chunk_index selects the slice.
-    SET sql_template = """
-      INSERT INTO batch_udf_results
-      SELECT
-        x.object_project,
-        x.object_dataset,
-        x.object_name,
-        x.object_type,
-        x.generation_type,
-        x.definition_hash,
-        x.analysis_id,
-        x.analyzed_at,
-        x.exported_json,
-        COALESCE(
-          JSON_VALUE(x.exported_json, '$.analysis.analysis_status'),
-          'UNKNOWN'
-        ) AS udf_analysis_status,
-        JSON_VALUE(x.exported_json, '$.analysis.message') AS udf_analysis_message
-      FROM (
-        SELECT
-          p.object_project,
-          p.object_dataset,
-          p.object_name,
-          p.object_type,
-          p.generation_type,
-          p.definition_hash,
-          p.analysis_id,
-          @analyzed_at AS analyzed_at,
-          `__UDF__`(
-            p.definition_text,
-            p.physical_columns_json,
-            TO_JSON_STRING(STRUCT(
-              @strict_mode AS strict_mode,
-              TRUE AS compact_export
+              TRUE AS compact_export,
+              -- Parent-script DECLARE variable names (NULL/empty for non-script
+              -- objects). Lets the engine treat an unqualified script-variable
+              -- reference as an opaque value instead of a missing column.
+              p.script_variables AS script_variables
             )),
             TO_JSON_STRING(STRUCT(
               p.analysis_id AS analysis_id,
@@ -2297,37 +2417,19 @@ BEGIN
           ) AS exported_json
         FROM batch_analysis_input AS p
         WHERE p.is_analyzable
-          AND p.udf_chunk = @chunk_index
       ) AS x
     """;
 
-    SET rendered_sql = render_dynamic_sql(
-      sql_template,
-      repository_project_id,
-      repository_dataset,
-      target_project_id,
-      job_region,
-      udf_project_id,
-      udf_dataset,
-      udf_function_name,
-      repo_tables
-    );
+    EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
     ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
     AS 'Unresolved placeholder in batch UDF analysis SQL.';
 
-    SET analysis_udf_chunk_index = 0;
-
-    WHILE analysis_udf_chunk_index < analysis_udf_chunk_count DO
-      EXECUTE IMMEDIATE rendered_sql
-      USING
-        strict_mode AS strict_mode,
-        batch_analyzed_at AS analyzed_at,
-        FORMAT_TIMESTAMP('%FT%H:%M:%E*S%Ez', batch_analyzed_at) AS analyzed_at_iso,
-        analysis_udf_chunk_index AS chunk_index;
-
-      SET analysis_udf_chunk_index = analysis_udf_chunk_index + 1;
-    END WHILE;
+    EXECUTE IMMEDIATE rendered_sql
+    USING
+      strict_mode AS strict_mode,
+      batch_analyzed_at AS analyzed_at,
+      FORMAT_TIMESTAMP('%FT%H:%M:%E*S%Ez', batch_analyzed_at) AS analyzed_at_iso;
 
     -- ------------------------------------------------------------------------
     -- 4. Object key sets driving the set-based publish.
@@ -2380,9 +2482,21 @@ BEGIN
       ) AS source_row
       WHERE JSON_VALUE(source_row, '$') IS NOT NULL
     ),
+    -- exists_in_tables must be judged on the SAME dataset scope AND the SAME
+    -- moment that column metadata was collected for. current_referenced_tables is
+    -- a fresh TABLES scan taken in STEP 3 alongside current_target_columns, over
+    -- the referenced source datasets (option D). Using it (not the STEP 1
+    -- current_target_tables snapshot) means: a source whose dataset was NOT
+    -- column-scanned is treated as absent (has_absent_source), AND a source table
+    -- dropped between STEP 1 and STEP 3 is treated as absent rather than
+    -- present-but-uncollected. Otherwise such a source looks like a coverage gap
+    -- -> object non-publishable -> its absent-source not-found WARNINGS leak into
+    -- lineage_diagnostic (and the object FAILs transiently until the next run).
+    -- Genuine coverage gaps within referenced datasets (table present at scan
+    -- time, columns empty) are still flagged.
     tables AS (
       SELECT DISTINCT table_catalog, table_schema, table_name
-      FROM current_target_tables
+      FROM current_referenced_tables
     ),
     cols AS (
       SELECT DISTINCT table_catalog, table_schema, table_name
@@ -2717,6 +2831,151 @@ BEGIN
       analyzed_at
     FROM normalized_edges;
 
+    -- Column usage index (COMPLETED objects only). One row per resolved physical
+    -- column reference in each published object's SQL, across ALL clauses (not
+    -- only SELECT value-flow), from the UDF's column_usages export. source_* is
+    -- the referenced physical column (VIEW/TABLE classified like the dependency
+    -- edges); object_* is the object whose SQL contains the reference; usage_type
+    -- is the clause; line_number / line_text locate the reference.
+    CREATE OR REPLACE TEMP TABLE batch_staged_column_usage AS
+    WITH usage_rows AS (
+      SELECT
+        r.object_project,
+        r.object_dataset,
+        r.object_name,
+        r.object_type,
+        r.generation_type,
+        r.definition_hash,
+        JSON_VALUE(usage_row, '$.usage_type') AS usage_type,
+        JSON_VALUE(usage_row, '$.reference_name') AS reference_name,
+        JSON_VALUE(usage_row, '$.physical_table_name') AS physical_table_name,
+        JSON_VALUE(usage_row, '$.physical_column_name') AS physical_column_name,
+        JSON_VALUE(usage_row, '$.field_path') AS field_path,
+        SAFE_CAST(JSON_VALUE(usage_row, '$.line_number') AS INT64) AS line_number,
+        SAFE_CAST(JSON_VALUE(usage_row, '$.column_number') AS INT64) AS column_number,
+        JSON_VALUE(usage_row, '$.line_text') AS line_text,
+        JSON_VALUE(usage_row, '$.physical_resolution_status') AS resolution_status
+      FROM batch_udf_results AS r,
+      UNNEST(
+        JSON_QUERY_ARRAY(r.exported_json, '$.exported_tables.column_usages')
+      ) AS usage_row
+      WHERE EXISTS (
+        SELECT 1
+        FROM batch_completed_objects AS pub
+        WHERE pub.object_project = r.object_project
+          AND pub.object_dataset = r.object_dataset
+          AND pub.object_name = r.object_name
+          AND pub.object_type = r.object_type
+          AND pub.generation_type = r.generation_type
+          AND pub.definition_hash = r.definition_hash
+      )
+    ),
+    parsed_usages AS (
+      SELECT
+        u.definition_hash,
+        LOWER(
+          CASE ARRAY_LENGTH(SPLIT(u.physical_table_name, '.'))
+            WHEN 3 THEN SPLIT(u.physical_table_name, '.')[SAFE_OFFSET(0)]
+            ELSE u.object_project
+          END
+        ) AS source_project,
+        LOWER(
+          CASE ARRAY_LENGTH(SPLIT(u.physical_table_name, '.'))
+            WHEN 3 THEN SPLIT(u.physical_table_name, '.')[SAFE_OFFSET(1)]
+            WHEN 2 THEN SPLIT(u.physical_table_name, '.')[SAFE_OFFSET(0)]
+            ELSE u.object_dataset
+          END
+        ) AS source_dataset,
+        LOWER(
+          CASE ARRAY_LENGTH(SPLIT(u.physical_table_name, '.'))
+            WHEN 3 THEN SPLIT(u.physical_table_name, '.')[SAFE_OFFSET(2)]
+            WHEN 2 THEN SPLIT(u.physical_table_name, '.')[SAFE_OFFSET(1)]
+            ELSE SPLIT(u.physical_table_name, '.')[SAFE_OFFSET(0)]
+          END
+        ) AS source_object,
+        LOWER(u.physical_column_name) AS source_column,
+        LOWER(u.field_path) AS source_field_path,
+        LOWER(u.object_project) AS object_project,
+        LOWER(u.object_dataset) AS object_dataset,
+        LOWER(u.object_name) AS object_name,
+        u.object_type AS object_type,
+        u.generation_type AS generation_type,
+        u.usage_type AS usage_type,
+        u.reference_name AS reference_name,
+        u.line_number AS line_number,
+        u.column_number AS column_number,
+        u.line_text AS line_text,
+        u.resolution_status AS resolution_status,
+        batch_analyzed_at AS analyzed_at
+      FROM usage_rows AS u
+      WHERE u.physical_table_name IS NOT NULL
+        AND u.physical_column_name IS NOT NULL
+    ),
+    classified_usages AS (
+      SELECT
+        parsed.*,
+        CASE
+          WHEN source_registry.object_type = 'VIEW' THEN 'VIEW'
+          WHEN source_table.table_type = 'VIEW' THEN 'VIEW'
+          ELSE 'TABLE'
+        END AS source_object_type
+      FROM parsed_usages AS parsed
+      LEFT JOIN active_view_definitions AS source_registry
+        ON source_registry.is_active = TRUE
+       AND LOWER(source_registry.object_project) = parsed.source_project
+       AND LOWER(source_registry.object_dataset) = parsed.source_dataset
+       AND LOWER(source_registry.object_name) = parsed.source_object
+       AND source_registry.object_type = 'VIEW'
+      LEFT JOIN current_target_tables AS source_table
+        ON LOWER(source_table.table_catalog) = parsed.source_project
+       AND LOWER(source_table.table_schema) = parsed.source_dataset
+       AND LOWER(source_table.table_name) = parsed.source_object
+      QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY
+          parsed.definition_hash, parsed.source_project, parsed.source_dataset,
+          parsed.source_object, parsed.source_column, parsed.object_project,
+          parsed.object_dataset, parsed.object_name, parsed.usage_type,
+          parsed.line_number, parsed.column_number, parsed.reference_name
+        ORDER BY source_registry.updated_at DESC NULLS LAST
+      ) = 1
+    )
+    SELECT
+      source_project,
+      source_dataset,
+      source_object,
+      source_object_type,
+      source_column,
+      source_field_path,
+      object_project,
+      object_dataset,
+      object_name,
+      object_type,
+      generation_type,
+      definition_hash,
+      usage_type,
+      reference_name,
+      line_number,
+      column_number,
+      line_text,
+      resolution_status,
+      TO_HEX(SHA256(CONCAT(
+        COALESCE(object_project, ''), '|',
+        COALESCE(object_dataset, ''), '|',
+        COALESCE(object_name, ''), '|',
+        COALESCE(object_type, ''), '|',
+        COALESCE(generation_type, ''), '|',
+        COALESCE(source_project, ''), '|',
+        COALESCE(source_dataset, ''), '|',
+        COALESCE(source_object, ''), '|',
+        COALESCE(source_column, ''), '|',
+        COALESCE(usage_type, ''), '|',
+        CAST(COALESCE(line_number, -1) AS STRING), '|',
+        CAST(COALESCE(column_number, -1) AS STRING), '|',
+        COALESCE(reference_name, '')
+      ))) AS usage_key,
+      analyzed_at
+    FROM classified_usages;
+
     -- Diagnostics emitted by the UDF for every analyzed object (COMPLETED and
     -- non-COMPLETED alike). generation_type is carried for precise joins but is
     -- not part of the diagnostic table schema.
@@ -2770,6 +3029,7 @@ BEGIN
       LOWER(r.object_dataset) AS object_dataset,
       LOWER(r.object_name) AS object_name,
       r.object_type AS object_type,
+      r.generation_type AS generation_type,
       'UDF_RESULT_NOT_PUBLISHABLE' AS diagnostic_code,
       '06_analyze_changed_objects' AS engine_stage,
       'ERROR' AS severity,
@@ -2804,6 +3064,7 @@ BEGIN
       LOWER(f.object_dataset) AS object_dataset,
       LOWER(f.object_name) AS object_name,
       f.object_type AS object_type,
+      f.generation_type AS generation_type,
       'ANALYSIS_EXECUTION_FAILED' AS diagnostic_code,
       '06_analyze_changed_objects' AS engine_stage,
       'ERROR' AS severity,
@@ -2835,17 +3096,7 @@ BEGIN
           AND dependency.generation_type = obj.generation_type
       )
     """;
-    SET rendered_sql = render_dynamic_sql(
-      sql_template,
-      repository_project_id,
-      repository_dataset,
-      target_project_id,
-      job_region,
-      udf_project_id,
-      udf_dataset,
-      udf_function_name,
-      repo_tables
-    );
+    EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
     ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
     AS 'Unresolved placeholder in batch dependency backup SQL.';
     EXECUTE IMMEDIATE rendered_sql;
@@ -2863,20 +3114,31 @@ BEGIN
           AND diagnostic.object_type = obj.object_type
       )
     """;
-    SET rendered_sql = render_dynamic_sql(
-      sql_template,
-      repository_project_id,
-      repository_dataset,
-      target_project_id,
-      job_region,
-      udf_project_id,
-      udf_dataset,
-      udf_function_name,
-      repo_tables
-    );
+    EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
     ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
     AS 'Unresolved placeholder in batch diagnostic backup SQL.';
     EXECUTE IMMEDIATE rendered_sql;
+
+    -- Column usage backup (real table, addressed by column_usage_fqn -- not a
+    -- render placeholder). Keyed by the referencing object, matching the publish
+    -- DELETE below, so the EXCEPTION handler can restore exactly what it removes.
+    EXECUTE IMMEDIATE FORMAT(
+      """
+      CREATE OR REPLACE TEMP TABLE batch_previous_column_usage AS
+      SELECT usage.*
+      FROM `%s` AS usage
+      WHERE EXISTS (
+        SELECT 1
+        FROM batch_completed_objects AS obj
+        WHERE LOWER(usage.object_project) = LOWER(obj.object_project)
+          AND LOWER(usage.object_dataset) = LOWER(obj.object_dataset)
+          AND LOWER(usage.object_name) = LOWER(obj.object_name)
+          AND usage.object_type = obj.object_type
+          AND usage.generation_type = obj.generation_type
+      )
+      """,
+      column_usage_fqn
+    );
 
     -- ------------------------------------------------------------------------
     -- 7. Publish. Every statement is set-based and keyed by the object sets
@@ -2897,11 +3159,7 @@ BEGIN
             AND dependency.generation_type = obj.generation_type
         )
       """;
-      SET rendered_sql = render_dynamic_sql(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch dependency DELETE SQL.';
       EXECUTE IMMEDIATE rendered_sql;
@@ -2922,14 +3180,47 @@ BEGIN
           resolution_reason, edge_key, analyzed_at
         FROM batch_staged_direct_dependency
       """;
-      SET rendered_sql = render_dynamic_sql(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch dependency INSERT SQL.';
       EXECUTE IMMEDIATE rendered_sql;
+
+      -- 7a-2. Replace column usage rows for COMPLETED objects (keyed by the
+      -- referencing object). Real table addressed by column_usage_fqn.
+      EXECUTE IMMEDIATE FORMAT(
+        """
+        DELETE FROM `%s` AS usage
+        WHERE EXISTS (
+          SELECT 1
+          FROM batch_completed_objects AS obj
+          WHERE LOWER(usage.object_project) = LOWER(obj.object_project)
+            AND LOWER(usage.object_dataset) = LOWER(obj.object_dataset)
+            AND LOWER(usage.object_name) = LOWER(obj.object_name)
+            AND usage.object_type = obj.object_type
+            AND usage.generation_type = obj.generation_type
+        )
+        """,
+        column_usage_fqn
+      );
+      EXECUTE IMMEDIATE FORMAT(
+        """
+        INSERT INTO `%s` (
+          source_project, source_dataset, source_object, source_object_type,
+          source_column, source_field_path, object_project, object_dataset,
+          object_name, object_type, generation_type, definition_hash,
+          usage_type, reference_name, line_number, column_number, line_text,
+          resolution_status, usage_key, analyzed_at
+        )
+        SELECT
+          source_project, source_dataset, source_object, source_object_type,
+          source_column, source_field_path, object_project, object_dataset,
+          object_name, object_type, generation_type, definition_hash,
+          usage_type, reference_name, line_number, column_number, line_text,
+          resolution_status, usage_key, analyzed_at
+        FROM batch_staged_column_usage
+        """,
+        column_usage_fqn
+      );
 
       -- 7b. Replace diagnostics for all analyzed objects, then insert the UDF
       -- diagnostics, the non-publishable markers, and (appended) the
@@ -2945,11 +3236,7 @@ BEGIN
             AND diagnostic.object_type = obj.object_type
         )
       """;
-      SET rendered_sql = render_dynamic_sql(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch diagnostic DELETE SQL.';
       EXECUTE IMMEDIATE rendered_sql;
@@ -2957,32 +3244,28 @@ BEGIN
       SET sql_template = """
         INSERT INTO `__T_DIAGNOSTIC__` (
           definition_hash, object_project, object_dataset, object_name,
-          object_type, diagnostic_code, engine_stage, severity, output_column,
-          expression, message, diagnostic_json, analyzed_at
+          object_type, generation_type, diagnostic_code, engine_stage, severity,
+          output_column, expression, message, diagnostic_json, analyzed_at
         )
         SELECT
           definition_hash, object_project, object_dataset, object_name,
-          object_type, diagnostic_code, engine_stage, severity, output_column,
-          expression, message, diagnostic_json, analyzed_at
+          object_type, generation_type, diagnostic_code, engine_stage, severity,
+          output_column, expression, message, diagnostic_json, analyzed_at
         FROM batch_staged_lineage_diagnostic
         UNION ALL
         SELECT
           definition_hash, object_project, object_dataset, object_name,
-          object_type, diagnostic_code, engine_stage, severity, output_column,
-          expression, message, diagnostic_json, analyzed_at
+          object_type, generation_type, diagnostic_code, engine_stage, severity,
+          output_column, expression, message, diagnostic_json, analyzed_at
         FROM batch_nonpublishable_diagnostic
         UNION ALL
         SELECT
           definition_hash, object_project, object_dataset, object_name,
-          object_type, diagnostic_code, engine_stage, severity, output_column,
-          expression, message, diagnostic_json, analyzed_at
+          object_type, generation_type, diagnostic_code, engine_stage, severity,
+          output_column, expression, message, diagnostic_json, analyzed_at
         FROM batch_preanalysis_diagnostic
       """;
-      SET rendered_sql = render_dynamic_sql(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch diagnostic INSERT SQL.';
       EXECUTE IMMEDIATE rendered_sql;
@@ -3004,11 +3287,7 @@ BEGIN
           AND reg.generation_type = obj.generation_type
           AND reg.definition_hash = obj.definition_hash
       """;
-      SET rendered_sql = render_dynamic_sql(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch registry COMPLETED UPDATE SQL.';
       EXECUTE IMMEDIATE rendered_sql
@@ -3041,11 +3320,7 @@ BEGIN
           AND reg.generation_type = obj.generation_type
           AND reg.definition_hash = obj.definition_hash
       """;
-      SET rendered_sql = render_dynamic_sql(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch registry FAILED UPDATE SQL.';
       EXECUTE IMMEDIATE rendered_sql
@@ -3069,11 +3344,7 @@ BEGIN
             AND dependency.generation_type = obj.generation_type
         )
       """;
-      SET rendered_sql = render_dynamic_sql(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch rollback dependency DELETE SQL.';
       EXECUTE IMMEDIATE rendered_sql;
@@ -3082,14 +3353,31 @@ BEGIN
         INSERT INTO `__T_DIRECT_DEP__`
         SELECT * FROM batch_previous_direct_dependency
       """;
-      SET rendered_sql = render_dynamic_sql(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch rollback dependency INSERT SQL.';
       EXECUTE IMMEDIATE rendered_sql;
+
+      -- Restore column usage rows (real table via column_usage_fqn).
+      EXECUTE IMMEDIATE FORMAT(
+        """
+        DELETE FROM `%s` AS usage
+        WHERE EXISTS (
+          SELECT 1
+          FROM batch_completed_objects AS obj
+          WHERE LOWER(usage.object_project) = LOWER(obj.object_project)
+            AND LOWER(usage.object_dataset) = LOWER(obj.object_dataset)
+            AND LOWER(usage.object_name) = LOWER(obj.object_name)
+            AND usage.object_type = obj.object_type
+            AND usage.generation_type = obj.generation_type
+        )
+        """,
+        column_usage_fqn
+      );
+      EXECUTE IMMEDIATE FORMAT(
+        'INSERT INTO `%s` SELECT * FROM batch_previous_column_usage',
+        column_usage_fqn
+      );
 
       SET sql_template = """
         DELETE FROM `__T_DIAGNOSTIC__` AS diagnostic
@@ -3102,11 +3390,7 @@ BEGIN
             AND diagnostic.object_type = obj.object_type
         )
       """;
-      SET rendered_sql = render_dynamic_sql(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch rollback diagnostic DELETE SQL.';
       EXECUTE IMMEDIATE rendered_sql;
@@ -3115,11 +3399,7 @@ BEGIN
         INSERT INTO `__T_DIAGNOSTIC__`
         SELECT * FROM batch_previous_lineage_diagnostic
       """;
-      SET rendered_sql = render_dynamic_sql(
-        sql_template,
-        repository_project_id, repository_dataset, target_project_id,
-        job_region, udf_project_id, udf_dataset, udf_function_name, repo_tables
-      );
+      EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
       ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
       AS 'Unresolved placeholder in batch rollback diagnostic INSERT SQL.';
       EXECUTE IMMEDIATE rendered_sql;
@@ -3247,19 +3527,27 @@ BEGIN
     -- ------------------------------------------------------------------------
     -- 9. Run counters for the summary below.
     -- ------------------------------------------------------------------------
-    SET analyzed_object_count = (
+    -- Accumulate across dataset iterations (declared 0 before the loop).
+    SET analyzed_object_count = analyzed_object_count + (
       SELECT COUNT(*) FROM batch_completed_objects
     );
-    SET failed_object_count = (
+    SET failed_object_count = failed_object_count + (
       SELECT COUNT(*) FROM batch_udf_failed_objects
     ) + (
       SELECT COUNT(*) FROM batch_preanalysis_failures
     );
   END;
 
+  END FOR;
+
+  END IF;  -- has_analysis_work
+
   -- --------------------------------------------------------------------------
   -- Run summary.
   -- 04_rebuild_impact_table.sql is executed after this script in daily operation.
+  -- Reported once after the loop: the persisted repository tables reflect every
+  -- dataset's published results, and the run counters accumulated across
+  -- iterations.
   -- --------------------------------------------------------------------------
   SET sql_template = """
     SELECT
@@ -3287,17 +3575,7 @@ BEGIN
       ) AS error_diagnostic_count
   """;
 
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in STEP 3 run summary SQL.';
@@ -3312,7 +3590,14 @@ END;
 -- ============================================================================
 -- STEP 4: Rebuild ranked impact paths
 -- ============================================================================
-BEGIN
+-- Rebuild the ranked impact paths only when this run changed the direct
+-- dependencies: either something was re-analyzed (has_analysis_work) or the
+-- orphan cleanup removed direct-dependency rows for a deactivated object. An
+-- unchanged daily run leaves impact as-is and skips the rebuild.
+IF has_analysis_work OR orphan_direct_dep_deleted > 0 THEN
+  -- Progress marker: labels this step in the console's "All results" list.
+  SELECT '===== STEP 4: rebuild ranked impact paths =====' AS processing_step;
+  BEGIN
   DECLARE snapshot_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
   DECLARE max_rank INT64 DEFAULT configured_max_impact_rank;
 
@@ -3456,17 +3741,7 @@ BEGIN
   FROM impact_tree
   """;
 
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in lineage_impact rebuild SQL.';
@@ -3487,17 +3762,7 @@ BEGIN
       ) AS impact_row_count
   """;
 
-  SET rendered_sql = render_dynamic_sql(
-    sql_template,
-    repository_project_id,
-    repository_dataset,
-    target_project_id,
-    job_region,
-    udf_project_id,
-    udf_dataset,
-    udf_function_name,
-    repo_tables
-  );
+  EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
   ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
   AS 'Unresolved placeholder in REBUILD_IMPACT summary SQL.';
@@ -3505,6 +3770,102 @@ BEGIN
   EXECUTE IMMEDIATE rendered_sql
   USING snapshot_time AS p_snapshot_time;
 END;
+
+END IF;  -- has_analysis_work OR orphan_direct_dep_deleted > 0
+
+-- ============================================================================
+-- STEP 5: Refresh the unanalyzed-object snapshot (report table)
+-- ============================================================================
+-- Persists the on-demand 09 report as a table, rebuilt (CREATE OR REPLACE) at the
+-- very end of every run so it never piles up. Rows are the currently-existing
+-- (is_active) registry objects that are NOT fully covered by analysis -- i.e.
+-- NOT (analysis_status is COMPLETED / COMPLETED_WITH_WARNINGS AND the last
+-- analyzed definition equals the current definition_hash) -- each tagged with a
+-- coverage_reason. Built straight from the definition registry, whose
+-- definition_text / definition_hash / analysis_status are already synchronized by
+-- STEP 1-2, so this adds no INFORMATION_SCHEMA re-scan. Ephemeral
+-- (rotating / temporary-destination) objects are excluded, matching the
+-- "currently-existing persistent object" scope. Deduped by definition_hash (one
+-- row per distinct SQL). Runs unconditionally (outside the STEP 4 gate) so the
+-- snapshot always reflects the latest registry state.
+--
+-- NOTE: objects dropped at the registry-exclusion stage are not in the registry,
+-- so they are not listed here. The on-demand
+-- sql/maintenance/09_unanalyzed_object_definitions.sql surfaces those too
+-- (coverage_reason = NOT_REGISTERED), by re-scanning INFORMATION_SCHEMA.
+--
+-- The table is not part of lnge_render_dynamic_sql's fixed __T_*__ placeholders; its
+-- qualified name is built directly (backtick-quoted per the team rule). It is
+-- created here by CREATE OR REPLACE (no 01 dependency); the CLUSTER BY / OPTIONS
+-- keep it self-describing.
+SELECT '===== STEP 5: refresh unanalyzed-object snapshot =====' AS processing_step;
+EXECUTE IMMEDIATE FORMAT(
+  """
+  CREATE OR REPLACE TABLE `%s`
+  CLUSTER BY object_project, object_dataset, object_name
+  OPTIONS (
+    description = 'Snapshot of currently-existing objects (Views and generated tables) not covered by lineage analysis. Rebuilt at the end of each daily pipeline run; deduped by definition_hash. See sql/maintenance/09 for the on-demand variant (which also lists registry-excluded objects).'
+  )
+  AS
+  WITH not_covered AS (
+    SELECT
+      object_project,
+      object_dataset,
+      object_name,
+      object_type,
+      generation_type,
+      definition_source,
+      source_job_id,
+      source_job_time,
+      analysis_status,
+      last_analyzed_hash,
+      is_active,
+      last_seen_at,
+      last_analyzed_at,
+      definition_hash,
+      definition_text,
+      CASE
+        WHEN analysis_status IS NULL THEN 'REGISTERED_NOT_YET_ANALYZED'
+        WHEN analysis_status NOT IN ('COMPLETED', 'COMPLETED_WITH_WARNINGS')
+          THEN 'ANALYSIS_' || analysis_status
+        ELSE 'DEFINITION_CHANGED_NOT_REANALYZED'
+      END AS coverage_reason
+    FROM `%s`
+    WHERE is_active = TRUE
+      AND (is_ephemeral IS NULL OR is_ephemeral = FALSE)
+      -- Not fully covered. NULL-safe via IS NOT DISTINCT FROM so a COMPLETED row
+      -- with a NULL last_analyzed_hash is surfaced, not silently dropped.
+      AND NOT (
+        analysis_status IN ('COMPLETED', 'COMPLETED_WITH_WARNINGS')
+        AND last_analyzed_hash IS NOT DISTINCT FROM definition_hash
+      )
+  )
+  SELECT
+    object_project,
+    object_dataset,
+    object_name,
+    object_type,
+    generation_type,
+    definition_source,
+    coverage_reason,
+    analysis_status,
+    source_job_id,
+    source_job_time,
+    is_active,
+    last_seen_at,
+    last_analyzed_at,
+    definition_hash,
+    definition_text,
+    CURRENT_TIMESTAMP() AS refreshed_at
+  FROM not_covered
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY definition_hash
+    ORDER BY object_type, source_job_time DESC NULLS LAST
+  ) = 1
+  """,
+  FORMAT('%s.%s.%s', repository_project_id, repository_dataset, table_unanalyzed_definition),
+  FORMAT('%s.%s.%s', repository_project_id, repository_dataset, table_definition_registry)
+);
 
 -- ============================================================================
 -- PIPELINE SUMMARY
@@ -3538,17 +3899,7 @@ SET sql_template = """
     ) AS error_diagnostic_count
 """;
 
-SET rendered_sql = render_dynamic_sql(
-  sql_template,
-  repository_project_id,
-  repository_dataset,
-  target_project_id,
-  job_region,
-  udf_project_id,
-  udf_dataset,
-  udf_function_name,
-  repo_tables
-);
+EXECUTE IMMEDIATE render_call_sql INTO rendered_sql USING sql_template AS sql_template;
 
 ASSERT NOT REGEXP_CONTAINS(rendered_sql, r'__[A-Z0-9_]+__')
 AS 'Unresolved placeholder in pipeline summary SQL.';

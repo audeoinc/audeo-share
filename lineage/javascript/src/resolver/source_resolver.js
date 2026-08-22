@@ -333,6 +333,10 @@ class SourceResolver {
       return "SUBQUERY";
     }
 
+    if (parsedSource.source_type === "TABLE_FUNCTION") {
+      return "TABLE_FUNCTION";
+    }
+
     const sourceName = this.#normalizeName(parsedSource.name);
     const definition = this.#findVisibleCteDefinition(scope, sourceName);
 

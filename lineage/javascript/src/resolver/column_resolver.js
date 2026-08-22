@@ -246,7 +246,10 @@ class ColumnResolver {
     for (const source of scope.sources) {
       if (source.source_type === "UNNEST" && source.expression) {
         this.#collectFromAst(source.expression, {
-          clause_type: source.source_role === "JOIN" ? "JOIN_UNNEST" : "FROM_UNNEST"
+          clause_type: source.source_role === "JOIN" ? "JOIN_UNNEST" : "FROM_UNNEST",
+          // 配列引数を保持するUNNESTソース自身。UNNESTの配列式は自分自身の
+          // 要素を参照できない(循環)ため、非修飾名の候補から除外する。
+          unnest_owner_source_id: source.source_id
         }, scope, sourceResolution, result);
       }
     }
@@ -413,7 +416,8 @@ class ColumnResolver {
      */
     const unnestValueSource = this.#findUnnestValueSource(
       scope.scope_id,
-      columnName
+      columnName,
+      context.unnest_owner_source_id ?? null
     );
 
     if (unnestValueSource) {
@@ -429,8 +433,51 @@ class ColumnResolver {
     const candidateSources = this.#findUnqualifiedCandidates(
       sourceResolution,
       scope.scope_id,
-      columnName
+      columnName,
+      context.unnest_owner_source_id ?? null
     );
+
+    /*
+     * UNNESTの配列引数(FROM/JOINのUNNEST(...)の中の非修飾名)が、外側Queryの
+     * SELECT出力エイリアスを指す相関参照のケース。
+     *   SELECT ARRAY_AGG(col) AS arr ... GROUP BY ALL
+     *   HAVING EXISTS (SELECT 1 FROM UNNEST(arr) AS a INNER JOIN UNNEST([...]) AS b ON a=b)
+     * ここで `arr` は外側の `ARRAY_AGG(col) AS arr` への参照。ローカルScopeには
+     * 列集合不明のUNNESTソース(a,b等)しか無いため、これらが総当り候補になり、
+     * 単一なら誤ってそのUNNESTへ、複数ならAMBIGUOUS→PHYSICAL_COLUMN_NOT_FOUND
+     * になっていた。ローカルに確定一致(既知列を公開するCTE/サブクエリ)が無い
+     * 場合に限り、祖先Scopeの一意な出力エイリアスへSELECT_ALIAS_RESOLVEDとして
+     * 解決する(既知のローカル列があればそちらが優先=内側スコープ勝ち)。
+     */
+    const isUnnestArrayArgument =
+      context.clause_type === "FROM_UNNEST" ||
+      context.clause_type === "JOIN_UNNEST";
+
+    if (isUnnestArrayArgument) {
+      const hasKnownLocalMatch = candidateSources.some((candidate) => {
+        const knownColumns = this.#getKnownOutputColumns(candidate);
+
+        return knownColumns !== null && knownColumns.includes(columnName);
+      });
+
+      if (!hasKnownLocalMatch) {
+        const correlatedAlias = this.#findCorrelatedOutputAlias(
+          scope,
+          columnName
+        );
+
+        if (correlatedAlias) {
+          return this.#createReferenceResult(node, context, scope, {
+            qualifier: null,
+            columnName,
+            status: "SELECT_ALIAS_RESOLVED",
+            source: null,
+            candidateSourceIds: [],
+            outputAliasSelectItemSeq: correlatedAlias.select_item_seq
+          });
+        }
+      }
+    }
 
     if (candidateSources.length === 0) {
       return this.#createReferenceResult(node, context, scope, {
@@ -536,6 +583,45 @@ class ColumnResolver {
   }
 
   /**
+   * 相関参照として、祖先QueryのSELECT出力エイリアスを親方向に探す。
+   *
+   * UNNESTの配列引数など、ローカルScopeで確定解決できない非修飾名が、
+   * 外側Queryで定義した出力エイリアス(例: ARRAY_AGG(col) AS arr)を指す
+   * ケースに用いる。親Scopeから順に辿り、出力エイリアスが一意に一致する
+   * 最初のScopeのSELECT項目を返す。複数一致するScopeに当たった時点で
+   * 曖昧として打ち切り(nullを返す)、隠れた曖昧性を作らない。
+   */
+  #findCorrelatedOutputAlias(scope, columnName) {
+    let currentScope = this.scopeById.get(scope.parent_scope_id);
+
+    while (currentScope) {
+      const queryAst = this.queryByScopeId.get(currentScope.scope_id);
+
+      if (queryAst) {
+        const matches = (queryAst.select || []).filter((selectItem) => {
+          if (selectItem.wildcard_type) {
+            return false;
+          }
+
+          return this.#normalizeName(selectItem.output_alias) === columnName;
+        });
+
+        if (matches.length === 1) {
+          return matches[0];
+        }
+
+        if (matches.length > 1) {
+          return null;
+        }
+      }
+
+      currentScope = this.scopeById.get(currentScope.parent_scope_id);
+    }
+
+    return null;
+  }
+
+  /**
    * 非修飾列の候補を現在scopeから探す。
    *
    * CTE / SUBQUERYは出力列名が既知なので、該当列を持つ場合だけ候補にする。
@@ -546,11 +632,15 @@ class ColumnResolver {
    * scope連鎖の中から、別名が columnName に一致する UNNEST ソースを探す。
    * 一致が1つだけのときにその要素値参照として解決する(複数なら曖昧)。
    */
-  #findUnnestValueSource(startScopeId, columnName) {
+  #findUnnestValueSource(startScopeId, columnName, excludeSourceId = null) {
     let currentScope = this.scopeById.get(startScopeId);
 
     while (currentScope) {
       const matches = currentScope.sources.filter((source) => {
+        if (source.source_id === excludeSourceId) {
+          return false;
+        }
+
         return source.source_type === "UNNEST" &&
           (this.#normalizeName(source.source_alias) === columnName ||
            this.#normalizeName(source.offset_alias) === columnName);
@@ -570,11 +660,35 @@ class ColumnResolver {
     return null;
   }
 
-  #findUnqualifiedCandidates(sourceResolution, startScopeId, columnName) {
+  #findUnqualifiedCandidates(sourceResolution, startScopeId, columnName, unnestOwnerSourceId = null) {
     let currentScope = this.scopeById.get(startScopeId);
+    let isStartScope = true;
+
+    /*
+     * UNNESTの配列引数の可視範囲。UNNEST(...) の引数は、同じ FROM 節で「その UNNEST
+     * より前(左)」に現れたソースと、外側スコープだけを参照できる(lateral/相関)。自分
+     * 自身の要素は参照できず、後から JOIN されるソースはまだスコープに入っていない。
+     * 所有 UNNEST の登場順(source_seq)を求め、開始スコープでは「それ以降のソース」を
+     * 候補から除く。これをしないと、後続 JOIN のソースが同名列を持つ場合(例:
+     * UNNEST(Col) と、col 列を持つ後続 CTE)に誤った AMBIGUOUS になる。外側スコープには
+     * この順序制約は課さない(相関参照は外側の全ソースを見られる)。
+     */
+    const ownerScope = this.scopeById.get(startScopeId);
+    const ownerSource = unnestOwnerSourceId !== null && ownerScope
+      ? ownerScope.sources.find((source) => source.source_id === unnestOwnerSourceId)
+      : null;
+    const ownerSeq = ownerSource ? ownerSource.source_seq : null;
 
     while (currentScope) {
       const candidates = currentScope.sources.filter((source) => {
+        if (source.source_id === unnestOwnerSourceId) {
+          return false;
+        }
+
+        if (isStartScope && ownerSeq !== null && source.source_seq > ownerSeq) {
+          return false;
+        }
+
         const knownColumns = this.#getKnownOutputColumns(source);
 
         if (knownColumns === null) {
@@ -588,6 +702,7 @@ class ColumnResolver {
         return candidates;
       }
 
+      isStartScope = false;
       currentScope = this.scopeById.get(currentScope.parent_scope_id);
     }
 

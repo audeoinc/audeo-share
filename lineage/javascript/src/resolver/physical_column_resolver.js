@@ -30,7 +30,7 @@ class PhysicalColumnResolver {
    *
    * table_nameへ`project.dataset.sales`を直接渡す形式にも対応する。
    */
-  constructor(physicalColumns) {
+  constructor(physicalColumns, scriptVariables = []) {
     if (!Array.isArray(physicalColumns)) {
       throw new TypeError(
         "PhysicalColumnResolver: physicalColumns must be an array."
@@ -43,6 +43,13 @@ class PhysicalColumnResolver {
     this.outputColumnsByScopeId = new Map();
     this.nextPhysicalReferenceId = 1;
     this.nextExpandedOutputColumnId = 1;
+    // 親スクリプトの DECLARE / SET 変数名（正規化済み集合）。修飾なし識別子が
+    // 列として解決できなかったときのフォールバック判定に使う。
+    this.scriptVariables = new Set(
+      (Array.isArray(scriptVariables) ? scriptVariables : [])
+        .filter((name) => typeof name === "string")
+        .map((name) => this.#normalizeName(name))
+    );
   }
 
   /**
@@ -59,7 +66,10 @@ class PhysicalColumnResolver {
     this.#buildResolutionIndexes(context);
 
     const columnReferences = context.column_resolution.column_references.map(
-      (reference) => this.#resolveColumnReference(reference, context)
+      (reference) => this.#applyScriptVariableFallback(
+        this.#resolveColumnReference(reference, context),
+        reference
+      )
     );
     const unpivotGeneratedColumns =
       this.#resolveUnpivotGeneratedColumns(context);
@@ -195,6 +205,22 @@ class PhysicalColumnResolver {
       });
     }
 
+    if (reference.source_type === "TABLE_FUNCTION") {
+      /*
+       * TABLE_FUNCTION は EXTERNAL_QUERY など FROM 位置のテーブル値関数。外部/
+       * フェデレーテッド出力で BigQuery 物理列にマップできない。CTE/サブクエリの
+       * ように追える子スコープも無いため、DERIVED_SOURCE_RESOLVED にすると
+       * 「解決したが上流を辿れない」= PARTIALLY_RESOLVED(WARNING)になってしまう。
+       * 外部ソース列は正当な終端値なので、専用の EXTERNAL_SOURCE_RESOLVED で
+       * 定数同様の解決済み終端として扱う(系統エッジも診断も生まない)。
+       */
+      return this.#createPhysicalReference(reference, {
+        physicalStatus: "EXTERNAL_SOURCE_RESOLVED",
+        sourceId: reference.source_id,
+        physicalColumns: []
+      });
+    }
+
     if (reference.source_type === "UNNEST") {
       return this.#resolveCorrelatedUnnestReference(reference, context);
     }
@@ -239,6 +265,45 @@ class PhysicalColumnResolver {
     return this.#createPhysicalReference(reference, {
       physicalStatus: reference.resolution_status,
       sourceId: reference.source_id,
+      physicalColumns: []
+    });
+  }
+
+  /*
+   * スクリプト変数フォールバック。BigQuery の multi-statement script では、子
+   * ステートメント（JOBS に SELECT / CTAS として記録される 1 文）の query に
+   * DECLARE / SET が含まれないため、変数 aaa は修飾なし識別子として現れ、列と
+   * 区別できない。列として解決できなかった（PHYSICAL_COLUMN_NOT_FOUND /
+   * UNRESOLVED_COLUMN）修飾なし参照の名前が、親スクリプトで宣言された変数集合
+   * (scriptVariables) にあれば、値（系統を持たない）として解決済みにする。
+   *
+   * 列優先は維持する：列として解決できた参照や、複数ソースに実在する AMBIGUOUS は
+   * そのまま（BigQuery でも同名なら列が変数に優先する）。修飾あり（table.aaa）は
+   * 列 / STRUCT フィールドなので対象外。scriptVariables が空なら何もしない。
+   */
+  #applyScriptVariableFallback(resolved, reference) {
+    if (this.scriptVariables.size === 0) {
+      return resolved;
+    }
+
+    if (reference.qualifier) {
+      return resolved;
+    }
+
+    const status = resolved.physical_resolution_status;
+
+    if (status !== "PHYSICAL_COLUMN_NOT_FOUND" &&
+        status !== "UNRESOLVED_COLUMN") {
+      return resolved;
+    }
+
+    if (!this.scriptVariables.has(this.#normalizeName(reference.column_name))) {
+      return resolved;
+    }
+
+    return this.#createPhysicalReference(reference, {
+      physicalStatus: "SCRIPT_VARIABLE_RESOLVED",
+      sourceId: null,
       physicalColumns: []
     });
   }
@@ -631,7 +696,8 @@ class PhysicalColumnResolver {
      * (相関参照など別スコープ由来の可能性を潰さない)。
      */
     if (resolved.physical_resolution_status === "PHYSICAL_RESOLVED" ||
-        resolved.physical_resolution_status === "DERIVED_SOURCE_RESOLVED") {
+        resolved.physical_resolution_status === "DERIVED_SOURCE_RESOLVED" ||
+        resolved.physical_resolution_status === "EXTERNAL_SOURCE_RESOLVED") {
       return resolved;
     }
 
@@ -647,6 +713,8 @@ class PhysicalColumnResolver {
     const physicalMatches = [];
     const derivedMatches = [];
     const unnestCandidates = [];
+    const metadatalessPhysicalSources = [];
+    const externalSources = [];
 
     for (const sourceId of candidateSourceIds) {
       const source = this.sourceById.get(sourceId);
@@ -655,11 +723,18 @@ class PhysicalColumnResolver {
         continue;
       }
 
+      if (source.source_type === "TABLE_FUNCTION") {
+        externalSources.push(source);
+        continue;
+      }
+
       if (source.source_type === "PHYSICAL_TABLE") {
         const columns = this.#findPhysicalColumns(source, reference.column_name);
 
         if (columns.length > 0) {
           physicalMatches.push({ source, columns });
+        } else if (!this.#hasMetadataForSource(source)) {
+          metadatalessPhysicalSources.push(source);
         }
 
         continue;
@@ -710,6 +785,40 @@ class PhysicalColumnResolver {
         { ...reference, source_id: unnestCandidates[0].source_id },
         context
       );
+    }
+
+    /*
+     * 修飾なし列がどの present なソース(メタデータ収集済み)にも無く、かつ候補に
+     * 「列が1つも収集されていない物理ソース」がある場合。そのソースは実体が
+     * 消えている(一時/短命テーブル)か、まだメタデータ未収集のいずれか。列は
+     * その未収集ソース由来である可能性があり、ERROR(PHYSICAL_COLUMN_NOT_FOUND)と
+     * 断定できない。修飾ありの場合(#resolveAgainstPhysicalSource)と同様に
+     * PHYSICAL_METADATA_NOT_FOUND(WARNING)として、その未収集ソースへ帰属させる。
+     * 「実体が消えている」か「未収集(カバレッジ不足)」かの区別は 03 パイプライン側が
+     * INFORMATION_SCHEMA.TABLES で行い、前者は publish、後者は FAILED として扱う。
+     * totalMatches>1(複数の present ソースに存在)の AMBIGUOUS 判定は変更しない。
+     */
+    if (totalMatches === 0 && metadatalessPhysicalSources.length > 0) {
+      return this.#createPhysicalReference(reference, {
+        physicalStatus: "PHYSICAL_METADATA_NOT_FOUND",
+        sourceId: metadatalessPhysicalSources[0].source_id,
+        physicalColumns: []
+      });
+    }
+
+    /*
+     * 修飾なし列がどの物理/派生ソースにも無く、候補に TABLE_FUNCTION
+     * (EXTERNAL_QUERY など)がある場合。外部ソースは列集合が不明なので、その列は
+     * 外部由来である可能性があり、PHYSICAL_COLUMN_NOT_FOUND(ERROR)と断定できない。
+     * 外部終端(EXTERNAL_SOURCE_RESOLVED)として帰属させる。最後の分岐なので、
+     * 実テーブル/派生に一致する列はそちらが優先され、誤った AMBIGUOUS も起こさない。
+     */
+    if (totalMatches === 0 && externalSources.length > 0) {
+      return this.#createPhysicalReference(reference, {
+        physicalStatus: "EXTERNAL_SOURCE_RESOLVED",
+        sourceId: externalSources[0].source_id,
+        physicalColumns: []
+      });
     }
 
     return this.#createPhysicalReference(reference, {
